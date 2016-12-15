@@ -4026,7 +4026,15 @@ void Player::SetRoot(bool enable)
     WorldPacket data(enable ? SMSG_FORCE_MOVE_ROOT : SMSG_FORCE_MOVE_UNROOT, GetPackGUID().size() + 4);
     data << GetPackGUID();
     data << uint32(0);
-    SendMessageToSet(data, true);
+
+    if (GetMover() && GetMover()->GetTypeId() == TYPEID_PLAYER)
+    {
+        Player* pMover = (Player*)GetMover();
+        if (pMover != this)
+            pMover->GetSession()->SendPacket(data);
+    }
+
+    GetSession()->SendPacket(data);
 }
 
 void Player::SetWaterWalk(bool enable)
@@ -4719,79 +4727,39 @@ float Player::GetMeleeCritFromAgility() const
     return val;
 }
 
-float Player::GetDodgeFromAgility() const
+// Static multipliers for converting agi into dodge chance
+static const float PLAYER_AGI_TO_DODGE[MAX_CLASSES] =
 {
-    // from mangos 3462 for 1.12
-    float val = 0, classrate = 0;
+    0.00000f, // [0]  <Unused>
+    0.05000f, // [1]  Warrior
+    0.05000f, // [2]  Paladin
+    0.03774f, // [3]  Hunter
+    0.06897f, // [4]  Rogue
+    0.05000f, // [5]  Priest
+    0.00000f, // [6]  <Unused>
+    0.05000f, // [7]  Shaman
+    0.05000f, // [8]  Mage
+    0.05000f, // [9]  Warlock
+    0.00000f, // [10] <Unused>
+    0.05000f, // [11] Druid
+};
 
-    // dodge
-    if (getClass() == CLASS_HUNTER) classrate = 26.5;
-    else if (getClass() == CLASS_ROGUE)  classrate = 14.5;
-    else classrate = 20;
-    ///*+(Defense*0,04);
-    if (getRace() == RACE_NIGHTELF)
-        val = GetStat(STAT_AGILITY) / classrate + 1;
-    else
-        val = GetStat(STAT_AGILITY) / classrate;
-
-    return val;
-
-    /* [-ZERO]
-    // Table for base dodge values
-    const float dodge_base[MAX_CLASSES] =
-    {
-         0.0075f,   // Warrior
-         0.00652f,  // Paladin
-        -0.0545f,   // Hunter
-        -0.0059f,   // Rogue
-         0.03183f,  // Priest
-         0.0114f,   // DK
-         0.0167f,   // Shaman
-         0.034575f, // Mage
-         0.02011f,  // Warlock
-         0.0f,      // ??
-        -0.0187f    // Druid
-    };
-    // Crit/agility to dodge/agility coefficient multipliers
-    const float crit_to_dodge[MAX_CLASSES] =
-    {
-         1.1f,      // Warrior
-         1.0f,      // Paladin
-         1.6f,      // Hunter
-         2.0f,      // Rogue
-         1.0f,      // Priest
-         1.0f,      // DK?
-         1.0f,      // Shaman
-         1.0f,      // Mage
-         1.0f,      // Warlock
-         0.0f,      // ??
-         1.7f       // Druid
-    };
-
-    uint32 level = getLevel();
-    uint32 pclass = getClass();
-
-    if (level>GT_MAX_LEVEL) level = GT_MAX_LEVEL;
-
-    // Dodge per agility for most classes equal crit per agility (but for some classes need apply some multiplier)
-    GtChanceToMeleeCritEntry  const *dodgeRatio = sGtChanceToMeleeCritStore.LookupEntry((pclass-1)*GT_MAX_LEVEL + level-1);
-    if (dodgeRatio==nullptr || pclass > MAX_CLASSES)
+float Player::GetDodgeFromAgility(float amount)
+{
+    const uint32 pclass = getClass();
+    if (pclass >= MAX_CLASSES)
         return 0.0f;
-
-    float dodge=dodge_base[pclass-1] + GetStat(STAT_AGILITY) * dodgeRatio->ratio * crit_to_dodge[pclass-1];
-    return dodge*100.0f; */
+    return (amount * PLAYER_AGI_TO_DODGE[pclass]);
 }
 
 float Player::GetSpellCritFromIntellect() const
 {
-// Chance to crit is computed from INT and LEVEL as follows:
+    // Chance to crit is computed from INT and LEVEL as follows:
     //   chance = base + INT / (rate0 + rate1 * LEVEL)
     // The formula keeps the crit chance at %5 on every level unless the player
     // increases his intelligence by other means (enchants, buffs, talents, ...)
 
     //[TZERO] from mangos 3462 for 1.12 MUST BE CHECKED
-    float val = 0.0f;
-
     static const struct
     {
         float base;
@@ -4812,21 +4780,12 @@ float Player::GetSpellCritFromIntellect() const
         {   0.0f,   0.0f,  10.0f  },                        // 10: unused
         {   3.33f, 12.41f,  0.79f }                         // 11: druid
     };
-    float crit_chance;
-
-    // only players use intelligence for critical chance computations
-    if (GetTypeId() == TYPEID_PLAYER)
-    {
-        int my_class = getClass();
-        float crit_ratio = crit_data[my_class].rate0 + crit_data[my_class].rate1 * getLevel();
-        crit_chance = crit_data[my_class].base + GetStat(STAT_INTELLECT) / crit_ratio;
-    }
-    else
-        crit_chance = m_baseSpellCritChance;
-
-    crit_chance = crit_chance > 0.0 ? crit_chance : 0.0;
-
-    return crit_chance;
+    // FIXME: Add base value and scaling for hunters, fix the formula
+    const uint32 pclass = getClass();
+    if (pclass >= MAX_CLASSES)
+        return 0.0f;
+    const float crit_ratio = crit_data[pclass].rate0 + crit_data[pclass].rate1 * getLevel();
+    return (crit_data[pclass].base + (GetStat(STAT_INTELLECT) / crit_ratio));
 }
 
 float Player::OCTRegenHPPerSpirit() const
@@ -15575,6 +15534,9 @@ void Player::SetFFAPvP(bool state)
     else
         RemoveFlag(PLAYER_FLAGS, PLAYER_FLAGS_FFA_PVP);
 
+    ForceHealAndPowerUpdateInZone();
+    ForceHealthAndPowerUpdate();
+
     if (GetGroup())
         SetGroupUpdateFlag(GROUP_UPDATE_FLAG_STATUS);
 }
@@ -18235,24 +18197,6 @@ void Player::UpdateUnderwaterState(Map* m, float x, float y, float z)
     }
 }
 
-void Player::SetCanParry(bool value)
-{
-    if (m_canParry == value)
-        return;
-
-    m_canParry = value;
-    UpdateParryPercentage();
-}
-
-void Player::SetCanBlock(bool value)
-{
-    if (m_canBlock == value)
-        return;
-
-    m_canBlock = value;
-    UpdateBlockPercentage();
-}
-
 bool ItemPosCount::isContainedIn(ItemPosCountVec const& vec) const
 {
     for (ItemPosCountVec::const_iterator itr = vec.begin(); itr != vec.end(); ++itr)
@@ -18970,4 +18914,16 @@ void Player::DoInteraction(ObjectGuid const& interactObjGuid)
         RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_USE);
     }
     SendForcedObjectUpdate();
+}
+
+void Player::ForceHealAndPowerUpdateInZone()
+{
+    for (auto guid : m_clientGUIDs)
+    {
+        if (guid.IsUnit())
+        {
+            if (auto unit = GetMap()->GetUnit(guid))
+                unit->ForceHealthAndPowerUpdate();
+        }
+    }
 }
