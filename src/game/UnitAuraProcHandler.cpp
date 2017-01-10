@@ -341,7 +341,7 @@ SpellAuraProcResult Unit::HandleHasteAuraProc(Unit* pVictim, uint32 damage, Aura
     if (!triggered_spell_id)
         return SPELL_AURA_PROC_OK;
 
-    SpellEntry const* triggerEntry = sSpellStore.LookupEntry(triggered_spell_id);
+    SpellEntry const* triggerEntry = sSpellTemplate.LookupEntry<SpellEntry>(triggered_spell_id);
 
     if (!triggerEntry)
     {
@@ -592,7 +592,7 @@ SpellAuraProcResult Unit::HandleDummyAuraProc(Unit* pVictim, uint32 damage, Aura
             if (dummySpell->IsFitToFamilyMask(uint64(0x0000000800000000)))
             {
                 // check attack comes not from behind
-                if (!HasInArc(M_PI_F, pVictim))
+                if (pVictim->IsFacingTargetsBack(this))
                     return SPELL_AURA_PROC_FAILED;
 
                 triggered_spell_id = 22858;
@@ -814,7 +814,7 @@ SpellAuraProcResult Unit::HandleDummyAuraProc(Unit* pVictim, uint32 damage, Aura
     if (!triggered_spell_id)
         return SPELL_AURA_PROC_OK;
 
-    SpellEntry const* triggerEntry = sSpellStore.LookupEntry(triggered_spell_id);
+    SpellEntry const* triggerEntry = sSpellTemplate.LookupEntry<SpellEntry>(triggered_spell_id);
 
     if (!triggerEntry)
     {
@@ -1068,7 +1068,7 @@ SpellAuraProcResult Unit::HandleProcTriggerSpellAuraProc(Unit* pVictim, uint32 d
                             return SPELL_AURA_PROC_FAILED;
                     }
                 }
-                SpellEntry const* originalSpell = sSpellStore.LookupEntry(originalSpellId);
+                SpellEntry const* originalSpell = sSpellTemplate.LookupEntry<SpellEntry>(originalSpellId);
                 if (!originalSpell)
                 {
                     sLog.outError("Unit::HandleProcTriggerSpellAuraProc: Spell %u unknown but selected as original in Illu", originalSpellId);
@@ -1131,7 +1131,7 @@ SpellAuraProcResult Unit::HandleProcTriggerSpellAuraProc(Unit* pVictim, uint32 d
     }
 
     // All ok. Check current trigger spell
-    SpellEntry const* triggerEntry = sSpellStore.LookupEntry(trigger_spell_id);
+    SpellEntry const* triggerEntry = sSpellTemplate.LookupEntry<SpellEntry>(trigger_spell_id);
     if (!triggerEntry)
     {
         // Not cast unknown spell
@@ -1181,7 +1181,7 @@ SpellAuraProcResult Unit::HandleProcTriggerSpellAuraProc(Unit* pVictim, uint32 d
 
     // try detect target manually if not set
     if (target == nullptr)
-        target = !(procFlags & PROC_FLAG_SUCCESSFUL_POSITIVE_SPELL) && IsPositiveSpellTargetMode(triggerEntry, this, pVictim) ? this : pVictim;
+        target = !(procFlags & (PROC_FLAG_DONE_SPELL_MAGIC_DMG_CLASS_POS | PROC_FLAG_DONE_SPELL_NONE_DMG_CLASS_POS)) && IsPositiveSpellTargetMode(triggerEntry, this, pVictim) ? this : pVictim;
 
     // default case
     if (!target || (target != this && !target->isAlive()))
@@ -1216,7 +1216,7 @@ SpellAuraProcResult Unit::HandleProcTriggerDamageAuraProc(Unit* pVictim, uint32 
     SpellNonMeleeDamage damageInfo(this, pVictim, spellInfo->Id, SpellSchools(spellInfo->School));
     CalculateSpellDamage(&damageInfo, triggeredByAura->GetModifier()->m_amount, spellInfo);
     damageInfo.target->CalculateAbsorbResistBlock(this, &damageInfo, spellInfo);
-    DealDamageMods(damageInfo.target, damageInfo.damage, &damageInfo.absorb);
+    DealDamageMods(damageInfo.target, damageInfo.damage, &damageInfo.absorb, SPELL_DIRECT_DAMAGE, spellInfo);
     SendSpellNonMeleeDamageLog(&damageInfo);
     DealSpellDamage(&damageInfo, true);
     return SPELL_AURA_PROC_OK;
@@ -1300,7 +1300,7 @@ SpellAuraProcResult Unit::HandleOverrideClassScriptAuraProc(Unit* pVictim, uint3
         return SPELL_AURA_PROC_OK;
 
     // standard non-dummy case
-    SpellEntry const* triggerEntry = sSpellStore.LookupEntry(triggered_spell_id);
+    SpellEntry const* triggerEntry = sSpellTemplate.LookupEntry<SpellEntry>(triggered_spell_id);
 
     if (!triggerEntry)
     {

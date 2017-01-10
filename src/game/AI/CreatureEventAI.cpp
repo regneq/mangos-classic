@@ -637,7 +637,7 @@ void CreatureEventAI::ProcessAction(CreatureEventAI_Action const& action, uint32
                 {
                     if (m_DynamicMovement)
                     {
-                        SpellEntry const* spellInfo = sSpellStore.LookupEntry(spellId);
+                        SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(spellId);
 
                         if (spellInfo && !(spellInfo->rangeIndex == SPELL_RANGE_IDX_COMBAT || spellInfo->rangeIndex == SPELL_RANGE_IDX_SELF_ONLY) && target != m_creature)
                         {
@@ -1535,7 +1535,7 @@ void CreatureEventAI::ReceiveEmote(Player* pPlayer, uint32 text_emote)
 
 #define HEALTH_STEPS            3
 
-void CreatureEventAI::DamageTaken(Unit* dealer, uint32& damage)
+void CreatureEventAI::DamageTaken(Unit* dealer, uint32& damage, DamageEffectType damagetype)
 {
     if (m_InvinceabilityHpLevel > 0 && m_creature->GetHealth() < m_InvinceabilityHpLevel + damage)
     {

@@ -92,7 +92,7 @@ void AddItemsSetItem(Player* player, Item* item)
         {
             if (!eff->spells[y])                            // free slot
             {
-                SpellEntry const* spellInfo = sSpellStore.LookupEntry(set->spells[x]);
+                SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(set->spells[x]);
                 if (!spellInfo)
                 {
                     sLog.outError("WORLD: unknown spell id %u in items set %u effects", set->spells[x], setid);
@@ -228,6 +228,13 @@ Item::Item()
     m_container = nullptr;
     mb_in_trade = false;
     m_lootState = ITEM_LOOT_NONE;
+    m_enchantEffectModifier = nullptr;
+}
+
+Item::~Item()
+{
+    if(m_enchantEffectModifier)
+        GetOwner()->AddSpellMod(m_enchantEffectModifier, false);
 }
 
 bool Item::Create(uint32 guidlow, uint32 itemid, Player const* owner)
@@ -897,6 +904,13 @@ bool Item::IsLimitedToAnotherMapOrZone(uint32 cur_mapId, uint32 cur_zoneId) cons
 {
     ItemPrototype const* proto = GetProto();
     return proto && ((proto->Map && proto->Map != cur_mapId) || (proto->Area && proto->Area != cur_zoneId));
+}
+
+void Item::SetEnchantmentModifier(SpellModifier * mod)
+{
+    if(m_enchantEffectModifier)
+        GetOwner()->AddSpellMod(m_enchantEffectModifier, false);
+    m_enchantEffectModifier = mod;
 }
 
 // Though the client has the information in the item's data field,

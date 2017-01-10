@@ -20,7 +20,7 @@
 #define _SPELLMGR_H
 
 // For static or at-server-startup loaded spell data
-// For more high level function for sSpellStore data
+// For more high level function for sSpellTemplate data
 
 #include "Common.h"
 #include "SharedDefines.h"
@@ -33,6 +33,7 @@
 #include "Unit.h"
 #include "Player.h"
 #include "SpellAuras.h"
+#include "SQLStorages.h"
 
 #include <map>
 
@@ -178,7 +179,7 @@ inline bool IsSealSpell(SpellEntry const* spellInfo)
 inline bool IsSpellMagePolymorph(uint32 spellid)
 {
     // Only mage polymorph bears hidden scripted regeneration
-    const SpellEntry* entry = sSpellStore.LookupEntry(spellid);
+    const SpellEntry* entry = sSpellTemplate.LookupEntry<SpellEntry>(spellid);
     return (entry && entry->SpellFamilyName == SPELLFAMILY_MAGE && (entry->SpellFamilyFlags & uint64(0x1000000)) && IsSpellHaveAura(entry, SPELL_AURA_MOD_CONFUSE));
 }
 
@@ -251,7 +252,7 @@ inline bool IsPassiveSpell(SpellEntry const* spellInfo)
 
 inline bool IsPassiveSpell(uint32 spellId)
 {
-    const SpellEntry* entry = sSpellStore.LookupEntry(spellId);
+    const SpellEntry* entry = sSpellTemplate.LookupEntry<SpellEntry>(spellId);
     return (entry && IsPassiveSpell(entry));
 }
 
@@ -270,7 +271,7 @@ inline bool IsAutocastable(SpellEntry const* spellInfo)
 
 inline bool IsAutocastable(uint32 spellId)
 {
-    SpellEntry const* spellInfo = sSpellStore.LookupEntry(spellId);
+    SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(spellId);
     if (!spellInfo)
         return false;
     return IsAutocastable(spellInfo);
@@ -606,6 +607,7 @@ inline bool IsNeutralTarget(uint32 target)
         case TARGET_DYNAMIC_OBJECT_BEHIND:
         case TARGET_DYNAMIC_OBJECT_LEFT_SIDE:
         case TARGET_DYNAMIC_OBJECT_RIGHT_SIDE:
+        case TARGET_DEST_CASTER_FRONT_LEAP:
         case TARGET_58:
         case TARGET_DUELVSPLAYER_COORDINATES:
             return true;
@@ -739,7 +741,7 @@ inline bool IsPositiveEffectTargetMode(const SpellEntry* entry, SpellEffectIndex
         // Its possible to go infinite cycle with triggered spells. We are interested to peek only at the first layer so far
         if (!recursive && spellid && (spellid != entry->Id))
         {
-            if (const SpellEntry* triggered = sSpellStore.LookupEntry(spellid))
+            if (const SpellEntry* triggered = sSpellTemplate.LookupEntry<SpellEntry>(spellid))
             {
                 for (uint32 i = EFFECT_INDEX_0; i < MAX_EFFECT_INDEX; ++i)
                 {
@@ -863,7 +865,7 @@ inline bool IsPositiveSpellTargetModeForSpecificTarget(uint32 spellId, uint8 eff
 {
     if (!spellId)
         return false;
-    return IsPositiveSpellTargetModeForSpecificTarget(sSpellStore.LookupEntry(spellId), effectMask, caster, target);
+    return IsPositiveSpellTargetModeForSpecificTarget(sSpellTemplate.LookupEntry<SpellEntry>(spellId), effectMask, caster, target);
 }
 
 inline bool IsPositiveSpellTargetMode(const SpellEntry* entry, const WorldObject* caster = nullptr, const WorldObject* target = nullptr)
@@ -882,7 +884,7 @@ inline bool IsPositiveSpellTargetMode(uint32 spellId, const WorldObject* caster,
 {
     if (!spellId)
         return false;
-    return IsPositiveSpellTargetMode(sSpellStore.LookupEntry(spellId), caster, target);
+    return IsPositiveSpellTargetMode(sSpellTemplate.LookupEntry<SpellEntry>(spellId), caster, target);
 }
 
 inline bool IsPositiveSpell(const SpellEntry* entry, const WorldObject* caster = nullptr, const WorldObject* target = nullptr)
@@ -901,7 +903,7 @@ inline bool IsPositiveSpell(uint32 spellId, const WorldObject* caster = nullptr,
 {
     if (!spellId)
         return false;
-    return IsPositiveSpell(sSpellStore.LookupEntry(spellId), caster, target);
+    return IsPositiveSpell(sSpellTemplate.LookupEntry<SpellEntry>(spellId), caster, target);
 }
 
 inline bool IsDispelSpell(SpellEntry const* spellInfo)
@@ -952,6 +954,18 @@ inline bool IsReflectableSpell(SpellEntry const* spellInfo)
     return spellInfo->DmgClass == SPELL_DAMAGE_CLASS_MAGIC && !spellInfo->HasAttribute(SPELL_ATTR_ABILITY)
         && !spellInfo->HasAttribute(SPELL_ATTR_EX_CANT_BE_REFLECTED) && !spellInfo->HasAttribute(SPELL_ATTR_UNAFFECTED_BY_INVULNERABILITY)
         && !spellInfo->HasAttribute(SPELL_ATTR_PASSIVE) && !IsPositiveSpell(spellInfo);
+}
+
+// Mostly required by spells that target a creature inside GO
+inline bool IsIgnoreLosSpell(SpellEntry const* spellInfo)
+{
+    //switch (spellInfo->Id)
+    //{
+    //    default:
+    //        break;
+    //}
+
+    return spellInfo->rangeIndex == 13 || spellInfo->HasAttribute(SPELL_ATTR_EX2_IGNORE_LOS);
 }
 
 inline bool NeedsComboPoints(SpellEntry const* spellInfo)
@@ -1013,7 +1027,7 @@ inline uint32 GetDispellMask(DispelType dispel)
 
 inline bool IsAuraAddedBySpell(uint32 auraType, uint32 spellId)
 {
-    SpellEntry const* spellproto = sSpellStore.LookupEntry(spellId);
+    SpellEntry const* spellproto = sSpellTemplate.LookupEntry<SpellEntry>(spellId);
     if (!spellproto) return false;
 
     for (int i = 0; i < 3; i++)
@@ -1122,7 +1136,6 @@ inline bool IsStackableAuraEffect(SpellEntry const* entry, SpellEntry const* ent
     const bool related = (entry->SpellFamilyName == entry2->SpellFamilyName);
     const bool siblings = (entry->SpellFamilyFlags == entry2->SpellFamilyFlags);
     const bool player = (entry->SpellFamilyName && !entry->SpellFamilyFlags.Empty());
-    const bool player2 = (entry2->SpellFamilyName && !entry2->SpellFamilyFlags.Empty());
     const bool multirank = (related && siblings && player);
     const bool instance = (entry->Id == entry2->Id || multirank);
 
@@ -1205,6 +1218,8 @@ inline bool IsStackableAuraEffect(SpellEntry const* entry, SpellEntry const* ent
             if (positive && entry->EffectMiscValue[i] == entry2->EffectMiscValue[similar] &&
                     ((entry->DmgClass && entry->DmgClass == entry2->DmgClass) || entry->HasAttribute(SPELL_ATTR_CANT_CANCEL)))
                 return false;
+            if (!positive && entry->EffectMiscValue[i] == entry2->EffectMiscValue[similar] && entry->Dispel == entry2->Dispel)
+                return false;
             break;
         case SPELL_AURA_MOD_HEALING_DONE:
         case SPELL_AURA_MOD_HEALING_PCT:
@@ -1262,8 +1277,8 @@ inline bool IsStackableAuraEffect(SpellEntry const* entry, SpellEntry const* ent
     if (nonmui && instance && !IsChanneledSpell(entry) && !IsChanneledSpell(entry2))
         return false; // Forbids multi-ranking and multi-application on rule, exclude channeled spells (like Mind Flay)
 
-    if (multirank && IsPositiveSpell(entry) && IsPositiveSpell(entry2) && !entry->HasAttribute(SPELL_ATTR_EX2_UNK24))
-        return false; // Forbids multi-ranking for positive spells, excludes class weapon enchants (semi-hackish)
+    if (multirank && IsPositiveSpell(entry) && IsPositiveSpell(entry2))
+        return false; // Forbids multi-ranking for positive spells
 
     return true;
 }
@@ -1357,7 +1372,7 @@ inline bool IsSimilarExistingAuraStronger(const Unit* caster, uint32 spellid, co
 {
     if (!spellid)
         return false;
-    return IsSimilarExistingAuraStronger(caster, sSpellStore.LookupEntry(spellid), existing);
+    return IsSimilarExistingAuraStronger(caster, sSpellTemplate.LookupEntry<SpellEntry>(spellid), existing);
 }
 
 // Diminishing Returns interaction with spells
@@ -1388,17 +1403,17 @@ enum ProcFlags
     PROC_FLAG_SUCCESSFUL_RANGED_SPELL_HIT   = 0x00000100,   // 08 Successful Ranged attack by Spell that use ranged weapon
     PROC_FLAG_TAKEN_RANGED_SPELL_HIT        = 0x00000200,   // 09 Taken damage by Spell that use ranged weapon
 
-    PROC_FLAG_SUCCESSFUL_POSITIVE_AOE_HIT   = 0x00000400,   // 10 Successful AoE (not 100% shure unused)
-    PROC_FLAG_TAKEN_POSITIVE_AOE            = 0x00000800,   // 11 Taken AoE      (not 100% shure unused)
+    PROC_FLAG_DONE_SPELL_NONE_DMG_CLASS_POS     = 0x00000400,  // 10 Done positive spell that has dmg class none
+    PROC_FLAG_TAKEN_SPELL_NONE_DMG_CLASS_POS    = 0x00000800,  // 11 Taken positive spell that has dmg class none
 
-    PROC_FLAG_SUCCESSFUL_AOE_SPELL_HIT      = 0x00001000,   // 12 Successful AoE damage spell hit (not 100% shure unused)
-    PROC_FLAG_TAKEN_AOE_SPELL_HIT           = 0x00002000,   // 13 Taken AoE damage spell hit      (not 100% shure unused)
+    PROC_FLAG_DONE_SPELL_NONE_DMG_CLASS_NEG     = 0x00001000,  // 12 Done negative spell that has dmg class none
+    PROC_FLAG_TAKEN_SPELL_NONE_DMG_CLASS_NEG    = 0x00002000,  // 13 Taken negative spell that has dmg class none
 
-    PROC_FLAG_SUCCESSFUL_POSITIVE_SPELL     = 0x00004000,   // 14 Successful cast positive spell (by default only on healing)
-    PROC_FLAG_TAKEN_POSITIVE_SPELL          = 0x00008000,   // 15 Taken positive spell hit (by default only on healing)
+    PROC_FLAG_DONE_SPELL_MAGIC_DMG_CLASS_POS    = 0x00004000,  // 14 Successful cast positive spell (by default only on healing)
+    PROC_FLAG_TAKEN_SPELL_MAGIC_DMG_CLASS_POS   = 0x00008000,  // 15 Taken positive spell hit (by default only on healing)
 
-    PROC_FLAG_SUCCESSFUL_NEGATIVE_SPELL_HIT = 0x00010000,   // 16 Successful negative spell cast (by default only on damage)
-    PROC_FLAG_TAKEN_NEGATIVE_SPELL_HIT      = 0x00020000,   // 17 Taken negative spell (by default only on damage)
+    PROC_FLAG_DONE_SPELL_MAGIC_DMG_CLASS_NEG    = 0x00010000,  // 16 Successful negative spell cast (by default only on damage)
+    PROC_FLAG_TAKEN_SPELL_MAGIC_DMG_CLASS_NEG   = 0x00020000,  // 17 Taken negative spell (by default only on damage)
 
     PROC_FLAG_ON_DO_PERIODIC                = 0x00040000,   // 18 Successful do periodic (damage / healing, determined by PROC_EX_PERIODIC_POSITIVE or negative if no procEx)
     PROC_FLAG_ON_TAKE_PERIODIC              = 0x00080000,   // 19 Taken spell periodic (damage / healing, determined by PROC_EX_PERIODIC_POSITIVE or negative if no procEx)
@@ -1420,10 +1435,10 @@ enum ProcFlags
                                   PROC_FLAG_TAKEN_RANGED_SPELL_HIT)
 
 #define NEGATIVE_TRIGGER_MASK (MELEE_BASED_TRIGGER_MASK                | \
-                               PROC_FLAG_SUCCESSFUL_AOE_SPELL_HIT      | \
-                               PROC_FLAG_TAKEN_AOE_SPELL_HIT           | \
-                               PROC_FLAG_SUCCESSFUL_NEGATIVE_SPELL_HIT | \
-                               PROC_FLAG_TAKEN_NEGATIVE_SPELL_HIT)
+                               PROC_FLAG_DONE_SPELL_NONE_DMG_CLASS_NEG      | \
+                               PROC_FLAG_TAKEN_SPELL_NONE_DMG_CLASS_NEG           | \
+                               PROC_FLAG_DONE_SPELL_MAGIC_DMG_CLASS_NEG | \
+                               PROC_FLAG_TAKEN_SPELL_MAGIC_DMG_CLASS_NEG)
 
 enum ProcFlagsEx
 {
@@ -1446,7 +1461,10 @@ enum ProcFlagsEx
     PROC_EX_RESERVED3           = 0x0008000,
     PROC_EX_EX_TRIGGER_ALWAYS   = 0x0010000,                // If set trigger always ( no matter another flags) used for drop charges
     PROC_EX_EX_ONE_TIME_TRIGGER = 0x0020000,                // If set trigger always but only one time (not used)
-    PROC_EX_PERIODIC_POSITIVE   = 0x0040000                 // For periodic heal
+    PROC_EX_PERIODIC_POSITIVE   = 0x0040000,                 // For periodic heal
+
+    // Flags for internal use - do not use these in db!
+    PROC_EX_INTERNAL_HOT        = 0x2000000
 };
 
 struct SpellProcEventEntry
@@ -1670,7 +1688,7 @@ class SpellMgr
             SpellAffectMap::const_iterator itr = mSpellAffectMap.find((spellId << 8) + effectId);
             if (itr != mSpellAffectMap.end())
                 return ClassFamilyMask(itr->second);
-            if (SpellEntry const* spellEntry = sSpellStore.LookupEntry(spellId))
+            if (SpellEntry const* spellEntry = sSpellTemplate.LookupEntry<SpellEntry>(spellId))
                 return ClassFamilyMask(spellEntry->EffectItemType[effectId]);
             return ClassFamilyMask();
         }

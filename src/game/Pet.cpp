@@ -134,7 +134,7 @@ SpellCastResult Pet::TryLoadFromDB(Unit* owner, uint32 petentry /*= 0*/, uint32 
         return SPELL_FAILED_NO_PET;
     }
 
-    SpellEntry const* spellInfo = sSpellStore.LookupEntry(summon_spell_id);
+    SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(summon_spell_id);
 
     bool isTemporarySummoned = spellInfo && GetSpellDuration(spellInfo) > 0;
 
@@ -207,7 +207,7 @@ bool Pet::LoadPetFromDB(Player* owner, uint32 petentry /*= 0*/, uint32 petnumber
     }
 
     uint32 summon_spell_id = fields[21].GetUInt32();
-    SpellEntry const* spellInfo = sSpellStore.LookupEntry(summon_spell_id);
+    SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(summon_spell_id);
 
     PetType pet_type = PetType(fields[22].GetUInt8());
     if (pet_type == HUNTER_PET)
@@ -308,32 +308,6 @@ bool Pet::LoadPetFromDB(Player* owner, uint32 petentry /*= 0*/, uint32 petnumber
     uint32 savedpower = fields[14].GetUInt32();
     Powers powerType = GetPowerType();
 
-    // failsafe check
-    savedhealth = savedhealth > GetMaxHealth() ? GetMaxHealth() : savedhealth;
-    savedpower = savedpower > GetMaxPower(powerType) ? GetMaxPower(powerType) : savedpower;
-
-    if (getPetType() == SUMMON_PET)
-    {
-        savedhealth = GetMaxHealth();
-        savedpower = GetMaxPower(powerType);
-    }
-    else if (!savedhealth)
-    {
-        if (getPetType() == HUNTER_PET && healthPercentage)
-        {
-            savedhealth = GetMaxHealth() * (float(healthPercentage) / 100);
-            savedpower = 0;
-        }
-        else
-        {
-            delete result;
-            return false;
-        }
-    }
-
-    SetHealth(savedhealth > GetMaxHealth() ? GetMaxHealth() : savedhealth);
-    SetPower(powerType, savedpower > GetMaxPower(powerType) ? GetMaxPower(powerType) : savedpower);
-
     // load action bar, if data broken will fill later by default spells.
     m_charmInfo->LoadPetActionBar(fields[16].GetCppString());
 
@@ -368,6 +342,32 @@ bool Pet::LoadPetFromDB(Player* owner, uint32 petentry /*= 0*/, uint32 petnumber
     LearnPetPassives();
     CastPetAuras(current);
     CastOwnerTalentAuras();
+
+    // failsafe check
+    savedhealth = savedhealth > GetMaxHealth() ? GetMaxHealth() : savedhealth;
+    savedpower = savedpower > GetMaxPower(powerType) ? GetMaxPower(powerType) : savedpower;
+
+    if (getPetType() == SUMMON_PET)
+    {
+        savedhealth = GetMaxHealth();
+        savedpower = GetMaxPower(powerType);
+    }
+    else if (!savedhealth)
+    {
+        if (getPetType() == HUNTER_PET && healthPercentage)
+        {
+            savedhealth = GetMaxHealth() * (float(healthPercentage) / 100);
+            savedpower = 0;
+        }
+        else
+        {
+            delete result;
+            return false;
+        }
+    }
+
+    SetHealth(savedhealth > GetMaxHealth() ? GetMaxHealth() : savedhealth);
+    SetPower(powerType, savedpower > GetMaxPower(powerType) ? GetMaxPower(powerType) : savedpower);
 
     map->Add((Creature*)this);
     AIM_Initialize();
@@ -963,7 +963,7 @@ void Pet::Unsummon(PetSaveMode mode, Unit* owner /*= nullptr*/)
             {
                 // returning of reagents only for players, so best done here
                 uint32 spellId = GetUInt32Value(UNIT_CREATED_BY_SPELL);
-                SpellEntry const* spellInfo = sSpellStore.LookupEntry(spellId);
+                SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(spellId);
 
                 if (spellInfo)
                 {
@@ -1375,21 +1375,18 @@ void Pet::InitStatsForLevel(uint32 petlevel)
     SetCreateHealth(health);
     SetMaxHealth(health);
     SetHealth(health);
-    SetModifierValue(UNIT_MOD_HEALTH, BASE_VALUE, health);
 
     // Set mana
     SetCreateMana(mana);
     SetMaxPower(POWER_MANA, mana);
     SetPower(POWER_MANA, mana);
-    SetModifierValue(UNIT_MOD_MANA, BASE_VALUE, mana);
 
     // Remove rage bar from pets (By setting rage = 0, and ensuring it stays that way by setting max rage = 0 as well)
     SetMaxPower(POWER_RAGE, 0);
     SetPower(POWER_RAGE, 0);
-    SetModifierValue(UNIT_MOD_RAGE, BASE_VALUE, 0);
 
     // Set armor
-    SetModifierValue(UNIT_MOD_ARMOR, BASE_VALUE, armor);
+    SetArmor(armor);
 
     return;
 }
@@ -1450,7 +1447,7 @@ void Pet::_LoadSpellCooldowns()
             uint32 spell_id = fields[0].GetUInt32();
             time_t db_time  = (time_t)fields[1].GetUInt64();
 
-            if (!sSpellStore.LookupEntry(spell_id))
+            if (!sSpellTemplate.LookupEntry<SpellEntry>(spell_id))
             {
                 sLog.outError("Pet %u have unknown spell %u in `pet_spell_cooldown`, skipping.", m_charmInfo->GetPetNumber(), spell_id);
                 continue;
@@ -1598,7 +1595,7 @@ void Pet::_LoadAuras(uint32 timediff)
             int32 remaintime = fields[12].GetInt32();
             uint32 effIndexMask = fields[13].GetUInt32();
 
-            SpellEntry const* spellproto = sSpellStore.LookupEntry(spellid);
+            SpellEntry const* spellproto = sSpellTemplate.LookupEntry<SpellEntry>(spellid);
             if (!spellproto)
             {
                 sLog.outError("Unknown spell (spellid %u), ignore.", spellid);
@@ -1739,7 +1736,7 @@ void Pet::_SaveAuras()
 
 bool Pet::addSpell(uint32 spell_id, ActiveStates active /*= ACT_DECIDE*/, PetSpellState state /*= PETSPELL_NEW*/, PetSpellType type /*= PETSPELL_NORMAL*/)
 {
-    SpellEntry const* spellInfo = sSpellStore.LookupEntry(spell_id);
+    SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(spell_id);
     if (!spellInfo)
     {
         // do pet spell book cleanup
@@ -1923,7 +1920,7 @@ void Pet::InitPetCreateSpells()
             if (!CreateSpells->spellid[i])
                 break;
 
-            SpellEntry const* learn_spellproto = sSpellStore.LookupEntry(CreateSpells->spellid[i]);
+            SpellEntry const* learn_spellproto = sSpellTemplate.LookupEntry<SpellEntry>(CreateSpells->spellid[i]);
             if (!learn_spellproto)
                 continue;
 

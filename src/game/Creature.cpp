@@ -737,10 +737,8 @@ bool Creature::AIM_Initialize()
         return false;
     }*/
 
-    CreatureAI* oldAI = m_ai;
     i_motionMaster.Initialize();
-    m_ai = FactorySelector::selectAI(this);
-    delete oldAI;
+    m_ai.reset(FactorySelector::selectAI(this));
 
     // Handle Spawned Events, also calls Reset()
     m_ai->JustRespawned();
@@ -1435,12 +1433,6 @@ void Creature::LoadEquipment(uint32 equip_entry, bool force)
         for (uint8 i = 0; i < MAX_VIRTUAL_ITEM_SLOT; ++i)
             SetVirtualItem(VirtualItemSlot(i), einfo->equipentry[i]);
     }
-    else if (EquipmentInfoRaw const* einfo = sObjectMgr.GetEquipmentInfoRaw(equip_entry))
-    {
-        m_equipmentId = equip_entry;
-        for (uint8 i = 0; i < MAX_VIRTUAL_ITEM_SLOT; ++i)
-            SetVirtualItemRaw(VirtualItemSlot(i), einfo->equipmodel[i], einfo->equipinfo[i], einfo->equipslot[i]);
-    }
 }
 
 bool Creature::HasQuest(uint32 quest_id) const
@@ -1658,7 +1650,7 @@ SpellEntry const* Creature::ReachWithSpellAttack(Unit* pVictim)
     {
         if (!m_spells[i])
             continue;
-        SpellEntry const* spellInfo = sSpellStore.LookupEntry(m_spells[i]);
+        SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(m_spells[i]);
         if (!spellInfo)
         {
             sLog.outError("WORLD: unknown spell id %i", m_spells[i]);
@@ -1710,7 +1702,7 @@ SpellEntry const* Creature::ReachWithSpellCure(Unit* pVictim)
     {
         if (!m_spells[i])
             continue;
-        SpellEntry const* spellInfo = sSpellStore.LookupEntry(m_spells[i]);
+        SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(m_spells[i]);
         if (!spellInfo)
         {
             sLog.outError("WORLD: unknown spell id %i", m_spells[i]);
@@ -1904,7 +1896,7 @@ bool Creature::IsOutOfThreatArea(Unit* pVictim) const
     if (!pVictim->isInAccessablePlaceFor(this))
         return true;
 
-    if (!pVictim->isVisibleForOrDetect(this, this, false))
+    if (!pVictim->isVisibleForOrDetect(this, this, true))
         return true;
 
     if (sMapStore.LookupEntry(GetMapId())->IsDungeon())
@@ -2073,7 +2065,7 @@ bool Creature::MeetsSelectAttackingRequirement(Unit* pTarget, SpellEntry const* 
 
 Unit* Creature::SelectAttackingTarget(AttackingTarget target, uint32 position, uint32 uiSpellEntry, uint32 selectFlags) const
 {
-    return SelectAttackingTarget(target, position, sSpellStore.LookupEntry(uiSpellEntry), selectFlags);
+    return SelectAttackingTarget(target, position, sSpellTemplate.LookupEntry<SpellEntry>(uiSpellEntry), selectFlags);
 }
 
 Unit* Creature::SelectAttackingTarget(AttackingTarget target, uint32 position, SpellEntry const* pSpellInfo /*= nullptr*/, uint32 selectFlags/*= 0*/) const
@@ -2201,7 +2193,7 @@ void Creature::_AddCreatureCategoryCooldown(uint32 category, time_t apply_time)
 
 void Creature::AddCreatureSpellCooldown(uint32 spellid)
 {
-    SpellEntry const* spellInfo = sSpellStore.LookupEntry(spellid);
+    SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(spellid);
     if (!spellInfo)
         return;
 
@@ -2215,7 +2207,7 @@ void Creature::AddCreatureSpellCooldown(uint32 spellid)
 
 bool Creature::HasCategoryCooldown(uint32 spell_id) const
 {
-    SpellEntry const* spellInfo = sSpellStore.LookupEntry(spell_id);
+    SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(spell_id);
     if (!spellInfo)
         return false;
 
@@ -2475,7 +2467,7 @@ void Creature::ApplyGameEventSpells(GameEventCreatureData const* eventData, bool
     uint32 remove_spell = activated ? eventData->spell_id_end : eventData->spell_id_start;
 
     if (remove_spell)
-        if (SpellEntry const* spellEntry = sSpellStore.LookupEntry(remove_spell))
+        if (SpellEntry const* spellEntry = sSpellTemplate.LookupEntry<SpellEntry>(remove_spell))
             if (IsSpellAppliesAura(spellEntry))
                 RemoveAurasDueToSpell(remove_spell);
 
@@ -2575,13 +2567,6 @@ void Creature::SetVirtualItem(VirtualItemSlot slot, uint32 item_id)
     SetByteValue(UNIT_VIRTUAL_ITEM_INFO + (slot * 2) + 0, VIRTUAL_ITEM_INFO_0_OFFSET_INVENTORYTYPE, proto->InventoryType);
 
     SetByteValue(UNIT_VIRTUAL_ITEM_INFO + (slot * 2) + 1, VIRTUAL_ITEM_INFO_1_OFFSET_SHEATH,        proto->Sheath);
-}
-
-void Creature::SetVirtualItemRaw(VirtualItemSlot slot, uint32 display_id, uint32 info0, uint32 info1)
-{
-    SetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_DISPLAY + slot, display_id);
-    SetUInt32Value(UNIT_VIRTUAL_ITEM_INFO + (slot * 2) + 0, info0);
-    SetUInt32Value(UNIT_VIRTUAL_ITEM_INFO + (slot * 2) + 1, info1);
 }
 
 void Creature::SetWalk(bool enable, bool asDefault)
