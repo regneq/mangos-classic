@@ -194,7 +194,7 @@ static inline SpellPartialResistDistribution InitSpellPartialResistDistribution(
                 const uint32 upcoming = ahead.at(column);
                 const int64 diff = (int64(upcoming) - base);
                 // Use bigger types signed math to avoid potential erratic behavior on some compilers...
-                values[column] = uint32(std::max(0.0, (base + std::round(diff * (intermediate / double(100.0))))));
+                values[column] = uint32(std::max(0.0, (base + ::round(diff * (intermediate / double(100.0))))));
             }
         }
     }
@@ -1186,6 +1186,8 @@ void Unit::JustKilledCreature(Creature* victim, Player* responsiblePlayer)
                 if (save->GetResetTime() < resettime)
                     save->SetResetTime(resettime);
             }
+
+            ((DungeonMap*)m)->GetPersistanceState()->UpdateEncounterState(ENCOUNTER_CREDIT_KILL_CREATURE, victim->GetEntry());
         }
     }
 
@@ -1420,7 +1422,7 @@ void Unit::CalculateSpellDamage(SpellNonMeleeDamage* damageInfo, int32 damage, S
         return;
 
     // Check spell crit chance
-    bool crit = IsSpellCrit(pVictim, spellInfo, damageSchoolMask, attackType);
+    bool crit = RollSpellCritOutcome(pVictim, damageSchoolMask, spellInfo);
 
     // damage bonus (per damage class)
     switch (spellInfo->DmgClass)
@@ -1432,13 +1434,6 @@ void Unit::CalculateSpellDamage(SpellNonMeleeDamage* damageInfo, int32 damage, S
             // Calculate damage bonus
             damage = MeleeDamageBonusDone(pVictim, damage, attackType, spellInfo, SPELL_DIRECT_DAMAGE);
             damage = pVictim->MeleeDamageBonusTaken(this, damage, attackType, spellInfo, SPELL_DIRECT_DAMAGE);
-
-            // if crit add critical bonus
-            if (crit)
-            {
-                damageInfo->HitInfo |= SPELL_HIT_TYPE_CRIT;
-                damage = SpellCriticalDamageBonus(spellInfo, damage, pVictim);
-            }
         }
         break;
         // Magical Attacks
@@ -1448,15 +1443,15 @@ void Unit::CalculateSpellDamage(SpellNonMeleeDamage* damageInfo, int32 damage, S
             // Calculate damage bonus
             damage = SpellDamageBonusDone(pVictim, spellInfo, damage, SPELL_DIRECT_DAMAGE);
             damage = pVictim->SpellDamageBonusTaken(this, spellInfo, damage, SPELL_DIRECT_DAMAGE);
-
-            // If crit add critical bonus
-            if (crit)
-            {
-                damageInfo->HitInfo |= SPELL_HIT_TYPE_CRIT;
-                damage = SpellCriticalDamageBonus(spellInfo, damage, pVictim);
-            }
         }
         break;
+    }
+
+    // if crit add critical bonus
+    if (crit)
+    {
+        damageInfo->HitInfo |= SPELL_HIT_TYPE_CRIT;
+        damage = CalculateCritAmount(pVictim, damage, spellInfo);
     }
 
     // damage mitigation
@@ -1643,16 +1638,7 @@ void Unit::CalculateMeleeDamage(Unit* pVictim, CalcDamageInfo* damageInfo, Weapo
             damageInfo->HitInfo |= HITINFO_CRITICALHIT;
             damageInfo->TargetState = VICTIMSTATE_NORMAL;
             damageInfo->procEx |= PROC_EX_CRITICAL_HIT;
-
-            for (uint8 i = 0; i < m_weaponDamageCount[damageInfo->attackType]; i++)
-            {
-                SubDamageInfo &subDamage = damageInfo->subDamage[i];
-                uint32 clean = 0;
-                const uint32 crit = MeleeCriticalDamageBonus(damageInfo->attackType, subDamage.damageSchoolMask, &clean, subDamage.damage, damageInfo->target);
-                damageInfo->cleanDamage += (clean - crit);
-                damageInfo->totalDamage += (crit - subDamage.damage);
-                subDamage.damage = crit;
-            }
+            damageInfo->totalDamage = CalculateCritAmount(damageInfo);
             break;
         }
         case MELEE_HIT_PARRY:
@@ -2193,11 +2179,9 @@ void Unit::CalculateDamageAbsorbAndResist(Unit* pCaster, SpellSchoolMask schoolM
 
 void Unit::CalculateAbsorbResistBlock(Unit* pCaster, SpellNonMeleeDamage* damageInfo, SpellEntry const* spellProto, WeaponAttackType attType)
 {
-    if (CanBlockAbility(pCaster, spellProto) && roll_chance_f(CalculateAbilityBlockChance(pCaster, spellProto)))
+    if (RollAbilityPartialBlockOutcome(pCaster, attType, spellProto))
     {
-        damageInfo->blocked = GetShieldBlockValue();
-        if (damageInfo->damage < damageInfo->blocked)
-            damageInfo->blocked = damageInfo->damage;
+        damageInfo->blocked = std::min(GetShieldBlockValue(), damageInfo->damage);
         damageInfo->damage -= damageInfo->blocked;
     }
 
@@ -2296,7 +2280,7 @@ MeleeHitOutcome Unit::RollMeleeOutcomeAgainst(const Unit* pVictim, WeaponAttackT
         return MELEE_HIT_EVADE;
 
     Die<UnitCombatDieSide, UNIT_COMBAT_DIE_HIT, NUM_UNIT_COMBAT_DIE_SIDES> die;
-    die.chance[UNIT_COMBAT_DIE_MISS] = uint32(CalculateEffectiveMissChance(pVictim, attType) * 100);
+    die.set(UNIT_COMBAT_DIE_MISS, CalculateEffectiveMissChance(pVictim, attType));
     if (pVictim->GetTypeId() == TYPEID_PLAYER && !pVictim->IsStandState() && CanCrit(attType))
     {
         die.chance[UNIT_COMBAT_DIE_CRIT] = 10000;
@@ -2308,17 +2292,17 @@ MeleeHitOutcome Unit::RollMeleeOutcomeAgainst(const Unit* pVictim, WeaponAttackT
         if (pVictim->CanReactInCombat())
         {
             if (pVictim->CanDodgeInCombat(this))
-                die.chance[UNIT_COMBAT_DIE_DODGE] = uint32(pVictim->CalculateEffectiveDodgeChance(this, attType) * 100);
+                die.set(UNIT_COMBAT_DIE_DODGE, pVictim->CalculateEffectiveDodgeChance(this, attType));
             if (pVictim->CanParryInCombat(this))
-                die.chance[UNIT_COMBAT_DIE_PARRY] = uint32(pVictim->CalculateEffectiveParryChance(this, attType) * 100);
+                die.set(UNIT_COMBAT_DIE_PARRY, pVictim->CalculateEffectiveParryChance(this, attType));
             if (pVictim->CanBlockInCombat(this, schoolMask))
-                die.chance[UNIT_COMBAT_DIE_BLOCK] = uint32(pVictim->CalculateEffectiveBlockChance(this, attType) * 100);
+                die.set(UNIT_COMBAT_DIE_BLOCK, pVictim->CalculateEffectiveBlockChance(this, attType));
         }
         if (CanGlanceInCombat(pVictim))
-            die.chance[UNIT_COMBAT_DIE_GLANCE] = uint32(CalculateEffectiveGlanceChance(pVictim, attType) * 100);
-        die.chance[UNIT_COMBAT_DIE_CRIT] = uint32(CalculateEffectiveCritChance(pVictim, attType) * 100);
+            die.set(UNIT_COMBAT_DIE_GLANCE, CalculateEffectiveGlanceChance(pVictim, attType));
+        die.set(UNIT_COMBAT_DIE_CRIT, CalculateEffectiveCritChance(pVictim, attType));
         if (CanCrushInCombat(pVictim))
-            die.chance[UNIT_COMBAT_DIE_CRUSH] = uint32(CalculateEffectiveCrushChance(pVictim, attType) * 100);
+            die.set(UNIT_COMBAT_DIE_CRUSH, CalculateEffectiveCrushChance(pVictim, attType));
         DEBUG_FILTER_LOG(LOG_FILTER_COMBAT, "RollMeleeOutcomeAgainst: New attack die: [MISS:%u, DODGE:%u, PARRY:%u, BLOCK:%u, GLANCE:%u, CRIT:%u, CRUSH:%u]",
                          die.chance[UNIT_COMBAT_DIE_MISS], die.chance[UNIT_COMBAT_DIE_DODGE], die.chance[UNIT_COMBAT_DIE_PARRY], die.chance[UNIT_COMBAT_DIE_BLOCK],
                          die.chance[UNIT_COMBAT_DIE_GLANCE], die.chance[UNIT_COMBAT_DIE_CRIT], die.chance[UNIT_COMBAT_DIE_CRUSH]);
@@ -2417,22 +2401,22 @@ void Unit::SendMeleeAttackStop(Unit* victim) const
     ((Creature*)victim)->AI().EnterEvadeMode(this);*/
 }
 
-// Melee based spells hit result calculations
 SpellMissInfo Unit::MeleeSpellHitResult(Unit* pVictim, SpellEntry const* spell)
 {
     Die<UnitCombatDieSide, UNIT_COMBAT_DIE_HIT, NUM_UNIT_COMBAT_DIE_SIDES> die;
-    die.chance[UNIT_COMBAT_DIE_MISS] = uint32(CalculateAbilityMissChance(pVictim, GetWeaponAttackType(spell), spell) * 100);
-    die.chance[UNIT_COMBAT_DIE_RESIST] = uint32(CalculateSpellResistChance(pVictim, SPELL_SCHOOL_MASK_NORMAL, spell) * 100);
+    die.set(UNIT_COMBAT_DIE_MISS, CalculateSpellMissChance(pVictim, SPELL_SCHOOL_MASK_NORMAL, spell));
+    die.set(UNIT_COMBAT_DIE_RESIST, CalculateSpellResistChance(pVictim, SPELL_SCHOOL_MASK_NORMAL, spell));
     if (pVictim->CanReactOnAbility(spell))
     {
+        const WeaponAttackType attackType = GetWeaponAttackType(spell);
         if (pVictim->CanDodgeAbility(this, spell))
-           die.chance[UNIT_COMBAT_DIE_DODGE] = uint32(pVictim->CalculateAbilityDodgeChance(this, spell) * 100);
+           die.set(UNIT_COMBAT_DIE_DODGE, pVictim->CalculateEffectiveDodgeChance(this, attackType, spell));
         if (pVictim->CanParryAbility(this, spell))
-           die.chance[UNIT_COMBAT_DIE_PARRY] = uint32(pVictim->CalculateAbilityParryChance(this, spell) * 100);
+           die.set(UNIT_COMBAT_DIE_PARRY, pVictim->CalculateEffectiveParryChance(this, attackType, spell));
         if (pVictim->CanDeflectAbility(this, spell))
-           die.chance[UNIT_COMBAT_DIE_DEFLECT] = uint32(pVictim->CalculateAbilityDeflectChance(this, spell) * 100);
+           die.set(UNIT_COMBAT_DIE_DEFLECT, pVictim->CalculateAbilityDeflectChance(this, spell));
         if (pVictim->CanBlockAbility(this, spell, true))
-           die.chance[UNIT_COMBAT_DIE_BLOCK] = uint32(pVictim->CalculateAbilityBlockChance(this, spell) * 100);
+           die.set(UNIT_COMBAT_DIE_BLOCK, pVictim->CalculateEffectiveBlockChance(this, attackType, spell));
     }
     DEBUG_FILTER_LOG(LOG_FILTER_COMBAT, "MeleeSpellHitResult: New ability hit die: %u [MISS:%u, RESIST:%u, DODGE:%u, PARRY:%u, DEFLECT:%u, BLOCK:%u]", spell->Id,
                      die.chance[UNIT_COMBAT_DIE_MISS], die.chance[UNIT_COMBAT_DIE_RESIST], die.chance[UNIT_COMBAT_DIE_DODGE],
@@ -2454,20 +2438,14 @@ SpellMissInfo Unit::MeleeSpellHitResult(Unit* pVictim, SpellEntry const* spell)
     return SPELL_MISS_NONE;
 }
 
-SpellMissInfo Unit::MagicSpellHitResult(Unit* pVictim, SpellEntry const* spell)
+SpellMissInfo Unit::MagicSpellHitResult(Unit* pVictim, SpellEntry const* spell, SpellSchoolMask schoolMask)
 {
-    // Can`t miss on dead target (on skinning for example)
-    if (!pVictim->isAlive())
-        return SPELL_MISS_NONE;
-
-    const SpellSchoolMask schoolMask = GetSpellSchoolMask(spell);
-
     Die<UnitCombatDieSide, UNIT_COMBAT_DIE_HIT, NUM_UNIT_COMBAT_DIE_SIDES> die;
-    die.chance[UNIT_COMBAT_DIE_MISS] = uint32(CalculateSpellMissChance(pVictim, schoolMask, spell) * 100);
-    die.chance[UNIT_COMBAT_DIE_RESIST] = uint32(CalculateSpellResistChance(pVictim, schoolMask, spell) * 100);
+    die.set(UNIT_COMBAT_DIE_MISS, CalculateSpellMissChance(pVictim, schoolMask, spell));
+    die.set(UNIT_COMBAT_DIE_RESIST, CalculateSpellResistChance(pVictim, schoolMask, spell));
     /* Deflect for spells is currently unused up until WotLK, commented out for performance
     if (pVictim->CanDeflectAbility(this, spell))
-       die.chance[UNIT_COMBAT_DIE_DEFLECT] = uint32(pVictim->CalculateAbilityDeflectChance(this, spell) * 100);
+       die.set(UNIT_COMBAT_DIE_DEFLECT, pVictim->CalculateAbilityDeflectChance(this, spell));
     */
     DEBUG_FILTER_LOG(LOG_FILTER_COMBAT, "MagicSpellHitResult: New spell hit die: %u [MISS:%u, RESIST:%u, DEFLECT:%u]", spell->Id,
                      die.chance[UNIT_COMBAT_DIE_MISS], die.chance[UNIT_COMBAT_DIE_RESIST], die.chance[UNIT_COMBAT_DIE_DEFLECT]);
@@ -2485,69 +2463,50 @@ SpellMissInfo Unit::MagicSpellHitResult(Unit* pVictim, SpellEntry const* spell)
     return SPELL_MISS_NONE;
 }
 
-// Calculate spell hit result can be:
-// Every spell can: Evade/Immune/Reflect/Sucesful hit
-// For melee based spells:
-//   Miss
-//   Dodge
-//   Parry
-// For spells
-//   Resist
-SpellMissInfo Unit::SpellHitResult(Unit* pVictim, SpellEntry const* spell, bool CanReflect)
+SpellMissInfo Unit::SpellHitResult(Unit* pVictim, SpellEntry const* spell, bool reflectable)
 {
+    // Dead units can't be missed, can't resist, reflect, etc
+    if (!pVictim->isAlive())
+        return SPELL_MISS_NONE;
+    // Return evade for units in evade mode
+    if (pVictim->GetTypeId() == TYPEID_UNIT && ((Creature*)pVictim)->IsInEvadeMode())
+        return SPELL_MISS_EVADE;
+    // All positive spells can`t miss
+    // TODO: client not show miss log for this spells - so need find info for this in dbc and use it!
+    if (IsPositiveSpell(spell, this, pVictim))
+        return SPELL_MISS_NONE;
     SpellSchoolMask schoolMask = GetSpellSchoolMask(spell);
-
     // wand case
     bool wand = spell->Id == 5019;
     if (wand && !!(getClassMask() & CLASSMASK_WAND_USERS) && GetTypeId() == TYPEID_PLAYER)
         schoolMask = GetSchoolMask(GetWeaponDamageSchool(RANGED_ATTACK));
-
-    // Return evade for units in evade mode
-    if (pVictim->GetTypeId() == TYPEID_UNIT && ((Creature*)pVictim)->IsInEvadeMode())
-        return SPELL_MISS_EVADE;
-
-    // All positive spells can`t miss
-    // TODO: client not show miss log for this spells - so need find info for this in dbc and use it!
-    if (IsPositiveSpell(spell->Id, this, pVictim))
-        return SPELL_MISS_NONE;
-
-    // Try victim reflect spell
-    if (CanReflect)
+    // Reflect (when available)
+    if (reflectable)
     {
-        int32 reflectchance = pVictim->GetTotalAuraModifier(SPELL_AURA_REFLECT_SPELLS);
-        Unit::AuraList const& mReflectSpellsSchool = pVictim->GetAurasByType(SPELL_AURA_REFLECT_SPELLS_SCHOOL);
-        for (Unit::AuraList::const_iterator i = mReflectSpellsSchool.begin(); i != mReflectSpellsSchool.end(); ++i)
-            if ((*i)->GetModifier()->m_miscvalue & schoolMask)
-                reflectchance += (*i)->GetModifier()->m_amount;
-
-        if (reflectchance > 0 && roll_chance_i(reflectchance))
-        {
-            // Start triggers for remove charges if need (trigger only for victim, and mark as active spell)
-            ProcDamageAndSpell(pVictim, PROC_FLAG_NONE, PROC_FLAG_TAKEN_SPELL_MAGIC_DMG_CLASS_NEG, PROC_EX_REFLECT, 1, BASE_ATTACK, spell);
+        const float chance = pVictim->GetReflectChance(schoolMask);
+        if (roll_chance_combat(chance))
             return SPELL_MISS_REFLECT;
-        }
     }
-
     if (!spell->HasAttribute(SPELL_ATTR_UNAFFECTED_BY_INVULNERABILITY))
     {
+        // TODO: improve for partial application
         // Check for immune
-        if (!wand && pVictim->IsImmuneToSpell(spell, this == pVictim))
+        if (!wand && pVictim->IsImmuneToSpell(spell, (this == pVictim)))
             return SPELL_MISS_IMMUNE;
-
         // Check for immune (use charges)
-        if (pVictim->IsImmuneToDamage(GetSpellSchoolMask(spell)))
+        if (pVictim->IsImmuneToDamage(schoolMask))
             return SPELL_MISS_IMMUNE;
     }
-
     switch (spell->DmgClass)
     {
-        case SPELL_DAMAGE_CLASS_NONE:
-            return SPELL_MISS_NONE;
-        case SPELL_DAMAGE_CLASS_MAGIC:
-            return MagicSpellHitResult(pVictim, spell);
         case SPELL_DAMAGE_CLASS_MELEE:
         case SPELL_DAMAGE_CLASS_RANGED:
             return MeleeSpellHitResult(pVictim, spell);
+        case SPELL_DAMAGE_CLASS_MAGIC:
+            return MagicSpellHitResult(pVictim, spell, schoolMask);
+        case SPELL_DAMAGE_CLASS_NONE:
+            // Usually never misses, but needs more research for some spells
+            break;
     }
     return SPELL_MISS_NONE;
 }
@@ -2601,7 +2560,7 @@ bool Unit::CanDodgeInCombat() const
     if (!CanDodge() || !CanReactInCombat())
         return false;
     // Own chance appears to be zero / below zero / unmeaningful for some reason (debuffs?): unit is incapable
-    if (GetDodgeChance() < 0.01f)
+    if (GetDodgeChance() < 0.005f)
         return false;
      return true;
 }
@@ -2621,7 +2580,7 @@ bool Unit::CanParryInCombat() const
     if (!CanParry() || !CanReactInCombat() || HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_DISARMED) || IsNonMeleeSpellCasted(false))
         return false;
     // Own chance appears to be zero / below zero / unmeaningful for some reason (debuffs?): unit is incapable
-    if (GetParryChance() < 0.01f)
+    if (GetParryChance() < 0.005f)
         return false;
     // Players need a melee weapon they can use to parry an attack
     if (GetTypeId() == TYPEID_PLAYER)
@@ -2645,7 +2604,7 @@ bool Unit::CanBlockInCombat(SpellSchoolMask weaponSchoolMask) const
     if (!CanBlock() || !CanReactInCombat() || IsNonMeleeSpellCasted(false))
         return false;
     // Own chance appears to be zero / below zero / unmeaningful for some reason (debuffs?): unit is incapable
-    if (GetBlockChance() < 0.01f)
+    if (GetBlockChance() < 0.005f)
         return false;
     // Players need a shield equipped to block an attack
     if (GetTypeId() == TYPEID_PLAYER)
@@ -2776,14 +2735,15 @@ bool Unit::CanDeflectAbility(const Unit *attacker, const SpellEntry *ability) co
     return true;
 }
 
-float Unit::CalculateEffectiveDodgeChance(const Unit *attacker, WeaponAttackType attType, bool weapon) const
+float Unit::CalculateEffectiveDodgeChance(const Unit *attacker, WeaponAttackType attType, const SpellEntry *ability) const
 {
     float chance = 0.0f;
 
     chance += GetDodgeChance();
     // Own chance appears to be zero / below zero / unmeaningful for some reason (debuffs?): skip calculation, unit is incapable
-    if (chance < 0.01f)
+    if (chance < 0.005f)
         return 0.0f;
+    const bool weapon = (!ability || ability->EquippedItemClass == ITEM_CLASS_WEAPON);
     // Skill difference can be negative (and reduce our chance to mitigate an attack), which means:
     // a) Attacker's level is higher
     // b) Attacker has +skill bonuses
@@ -2799,7 +2759,7 @@ float Unit::CalculateEffectiveDodgeChance(const Unit *attacker, WeaponAttackType
     return std::max(0.0f, std::min(chance, 100.0f));
 }
 
-float Unit::CalculateEffectiveParryChance(const Unit *attacker, WeaponAttackType attType, bool weapon) const
+float Unit::CalculateEffectiveParryChance(const Unit *attacker, WeaponAttackType attType, const SpellEntry *ability) const
 {
     float chance = 0.0f;
 
@@ -2808,8 +2768,9 @@ float Unit::CalculateEffectiveParryChance(const Unit *attacker, WeaponAttackType
 
     chance += GetParryChance();
     // Own chance appears to be zero / below zero / unmeaningful for some reason (debuffs?): skip calculation, unit is incapable
-    if (chance < 0.01f)
+    if (chance < 0.005f)
         return 0.0f;
+    const bool weapon = (!ability || ability->EquippedItemClass == ITEM_CLASS_WEAPON);
     // Skill difference can be negative (and reduce our chance to mitigate an attack), which means:
     // a) Attacker's level is higher
     // b) Attacker has +skill bonuses
@@ -2822,7 +2783,14 @@ float Unit::CalculateEffectiveParryChance(const Unit *attacker, WeaponAttackType
     if (!isPlayerOrPet && difference > 0)
     {
         if (difference > 10)
+        {
+            // First 10 points of difference (2 levels): usual decrease
+            chance += (10 * 0.1f);
+            difference -= 10;
+            // Each additional point of difference:
             factor = 0.4f;
+            chance += (difference * 0.2f); // Pre-WotLK: Additional 1% miss chance for each level above 2 (total @ 3% per level)
+        }
         else
             factor = 0.1f;
     }
@@ -2830,14 +2798,15 @@ float Unit::CalculateEffectiveParryChance(const Unit *attacker, WeaponAttackType
     return std::max(0.0f, std::min(chance, 100.0f));
 }
 
-float Unit::CalculateEffectiveBlockChance(const Unit *attacker, WeaponAttackType attType, bool weapon) const
+float Unit::CalculateEffectiveBlockChance(const Unit *attacker, WeaponAttackType attType, const SpellEntry *ability) const
 {
     float chance = 0.0f;
 
     chance += GetBlockChance();
     // Own chance appears to be zero / below zero / unmeaningful for some reason (debuffs?): skip calculation, unit is incapable
-    if (chance < 0.01f)
+    if (chance < 0.005f)
         return 0.0f;
+    const bool weapon = (!ability || ability->EquippedItemClass == ITEM_CLASS_WEAPON);
     // Skill difference can be negative (and reduce our chance to mitigate an attack), which means:
     // a) Attacker's level is higher
     // b) Attacker has +skill bonuses
@@ -2902,43 +2871,23 @@ float Unit::CalculateEffectiveDazeChance(const Unit *victim, WeaponAttackType at
     return std::max(0.0f, std::min(chance, 40.0f));
 }
 
-float Unit::CalculateAbilityDodgeChance(const Unit *attacker, const SpellEntry *ability) const
-{
-    const bool weapon = (ability->EquippedItemClass == ITEM_CLASS_WEAPON);
-    if (ability->DmgClass == SPELL_DAMAGE_CLASS_MELEE)
-        return CalculateEffectiveDodgeChance(attacker, GetWeaponAttackType(ability), weapon);
-    return 0.0f;
-}
-
-float Unit::CalculateAbilityParryChance(const Unit *attacker, const SpellEntry *ability) const
-{
-    const bool weapon = (ability->EquippedItemClass == ITEM_CLASS_WEAPON);
-    if (ability->DmgClass == SPELL_DAMAGE_CLASS_MELEE)
-        return CalculateEffectiveParryChance(attacker, GetWeaponAttackType(ability), weapon);
-    return 0.0f;
-}
-
-float Unit::CalculateAbilityBlockChance(const Unit *attacker, const SpellEntry *ability) const
-{
-    const bool weapon = (ability->EquippedItemClass == ITEM_CLASS_WEAPON);
-    switch (ability->DmgClass)
-    {
-        case SPELL_DAMAGE_CLASS_MELEE:
-        case SPELL_DAMAGE_CLASS_RANGED: return CalculateEffectiveBlockChance(attacker, GetWeaponAttackType(ability), weapon);
-    }
-    return 0.0f;
-}
-
 float Unit::CalculateAbilityDeflectChance(const Unit *attacker, const SpellEntry *ability) const
 {
-    const bool weapon = (ability->EquippedItemClass == ITEM_CLASS_WEAPON);
     switch (ability->DmgClass)
     {
         case SPELL_DAMAGE_CLASS_MELEE:
-        case SPELL_DAMAGE_CLASS_RANGED: return CalculateEffectiveParryChance(attacker, GetWeaponAttackType(ability), weapon);
-        case SPELL_DAMAGE_CLASS_MAGIC:  return CalculateEffectiveParryChance(attacker, RANGED_ATTACK, weapon);
+        case SPELL_DAMAGE_CLASS_RANGED: return CalculateEffectiveParryChance(attacker, GetWeaponAttackType(ability), ability);
+        case SPELL_DAMAGE_CLASS_MAGIC:  return CalculateEffectiveParryChance(attacker, RANGED_ATTACK, ability);
     }
     return 0.0f;
+}
+
+bool Unit::RollAbilityPartialBlockOutcome(const Unit *attacker, WeaponAttackType attType, const SpellEntry *ability) const
+{
+    if (CanBlockAbility(attacker, ability))
+        return false;
+    const float chance = CalculateEffectiveBlockChance(attacker, attType, ability);
+    return roll_chance_combat(chance);
 }
 
 float Unit::GetDodgeChance() const
@@ -2970,12 +2919,18 @@ float Unit::GetBlockChance() const
     return chance;
 }
 
+float Unit::GetReflectChance(SpellSchoolMask schoolMask) const
+{
+    float chance = 0.0f;
+    chance += GetTotalAuraModifier(SPELL_AURA_REFLECT_SPELLS);
+    // Reflect works in victim's favour when multi-school spells are involved
+    chance += GetTotalAuraModifierByMiscMask(SPELL_AURA_REFLECT_SPELLS_SCHOOL, schoolMask);
+    return chance;
+}
+
 bool Unit::CanCrit(const SpellEntry *entry, SpellSchoolMask schoolMask, WeaponAttackType attType) const
 {
     if (!IsSpellAbleToCrit(entry))
-        return false;
-    // Creatures do not crit with their spells or abilities, unless it is owned by a player (pet, totem, etc)
-    if (GetTypeId() == TYPEID_UNIT && !GetOwnerGuid().IsPlayer())
         return false;
     switch (entry->DmgClass)
     {
@@ -2991,16 +2946,8 @@ float Unit::GetCritChance(WeaponAttackType attType) const
 {
     float chance = 0.0f;
     if (GetTypeId() == TYPEID_UNIT)
-    {
-        // Totems use owner's crit chance (when owner is available)
-        if (((const Creature*)this)->IsTotem())
-        {
-            if (const Unit* owner = GetOwner())
-                return owner->GetCritChance(attType);
-        }
         // Base crit chance (needed for units only, already included for players)
         chance += 5.0f;
-    }
     chance += m_modCritChance[(attType == OFF_ATTACK) ? BASE_ATTACK : attType];
     return chance;
 }
@@ -3014,16 +2961,8 @@ float Unit::GetCritChance(SpellSchoolMask schoolMask) const
         return 0.0f;
 
     if (GetTypeId() == TYPEID_UNIT)
-    {
-        // Totems use owner's crit chance (when owner is available)
-        if (((const Creature*)this)->IsTotem())
-        {
-            if (const Unit* owner = GetOwner())
-                return owner->GetCritChance(schoolMask);
-        }
         // Base crit chance (needed for units only, already included for players)
         chance += 5.0f;
-    }
     // Pick highest spell crit available for given school mask
     for (uint8 school = 0; mask; ++school)
     {
@@ -3038,14 +2977,146 @@ float Unit::GetCritChance(SpellSchoolMask schoolMask) const
     return chance;
 }
 
+float Unit::GetCritChance(const SpellEntry *entry, SpellSchoolMask schoolMask) const
+{
+    float chance = 0.0f;
+
+    if (!entry)
+        return 0.0f;
+
+    // Add own hit chance
+    switch (entry->DmgClass)
+    {
+        case SPELL_DAMAGE_CLASS_MAGIC:
+            chance += GetCritChance(schoolMask);
+            break;
+        case SPELL_DAMAGE_CLASS_MELEE:
+        case SPELL_DAMAGE_CLASS_RANGED:
+            chance += GetCritChance(GetWeaponAttackType(entry));
+            break;
+    }
+    // Add mod
+    if (Player* modOwner = GetSpellModOwner())
+        modOwner->ApplySpellMod(entry->Id, SPELLMOD_CRITICAL_CHANCE, chance);
+    return chance;
+}
+
+float Unit::GetCritTakenChance(SpellSchoolMask dmgSchoolMask, SpellDmgClass dmgClass, bool heal) const
+{
+    float chance = 0.0f;
+    // Resilience and resilience-like auras:
+    if (!heal)
+    {
+        switch (uint32(dmgClass))
+        {
+            case SPELL_DAMAGE_CLASS_MELEE:
+                chance += GetTotalAuraModifier(SPELL_AURA_MOD_ATTACKER_MELEE_CRIT_CHANCE);
+                break;
+            case SPELL_DAMAGE_CLASS_RANGED:
+                chance += GetTotalAuraModifier(SPELL_AURA_MOD_ATTACKER_RANGED_CRIT_CHANCE);
+                break;
+            case SPELL_DAMAGE_CLASS_MAGIC:
+                chance += GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_ATTACKER_SPELL_CRIT_CHANCE, dmgSchoolMask);
+                break;
+        }
+    }
+    return chance;
+}
+
+float Unit::GetCritMultiplier(SpellSchoolMask dmgSchoolMask, uint32 creatureTypeMask, const SpellEntry *spell, bool heal) const
+{
+    const float pct = 0.01f;
+    // Default crit multiplier (attacks): 2x
+    float multiplier = 2.0f;
+    // Default crit multiplier for spells: 1.5x
+    if (spell)
+    {
+        switch (spell->DmgClass)
+        {
+            case SPELL_DAMAGE_CLASS_NONE:
+            case SPELL_DAMAGE_CLASS_MAGIC:
+                multiplier = 1.5f;
+                break;
+        }
+    }
+    // Multiplier bonus coefficient for damage
+    if (!heal)
+    {
+        float bonus = 0;
+        if (dmgSchoolMask)
+            bonus += GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_CRIT_DAMAGE_BONUS, dmgSchoolMask); // Gems, talents
+        if (creatureTypeMask)
+            bonus += GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_CRIT_PERCENT_VERSUS, creatureTypeMask); // Creature slaying
+        multiplier *= (1.0f + (bonus * pct));
+    }
+    // Apply spell mods
+    if (spell)
+    {
+        if (Player* modOwner = GetSpellModOwner())
+        {
+            // Extract crit bonus part only from multiplier (exclude base of 1) and modify it
+            float bonus = (multiplier - 1.0f);
+            modOwner->ApplySpellMod(spell->Id, SPELLMOD_CRIT_DAMAGE_BONUS, bonus);
+            // Reconstruct final multiplier now with increased bonus part
+            multiplier = (1.0f + bonus);
+        }
+    }
+    return std::max(0.0f, multiplier);
+}
+
+float Unit::GetCritTakenMultiplier(SpellSchoolMask /*dmgSchoolMask*/, SpellDmgClass /*dmgClass*/, float /*ignorePct*/, bool /*heal*/) const
+{
+    // Default incoming crit multiplier: 1x (receive full damage)
+    float multiplier = 1.0f;
+    return std::max(0.0f, multiplier);
+}
+
+uint32 Unit::CalculateCritAmount(const Unit *victim, uint32 amount, const SpellEntry *entry, bool heal) const
+{
+    if (!entry)
+        return 0;
+    const SpellSchoolMask schoolMask = GetSpellSchoolMask(entry);
+    const uint32 creatureTypeMask = (victim ? victim->GetCreatureTypeMask() : 0);
+    const float multiplier = GetCritMultiplier(schoolMask, creatureTypeMask, entry, heal);
+    const SpellDmgClass dmgClass = SpellDmgClass(entry->DmgClass);
+    const float ignoreReduction = 0.0f;
+    const float taken = (victim ? victim->GetCritTakenMultiplier(schoolMask, dmgClass, ignoreReduction, heal) : 1.0f);
+    const uint32 outgoing = uint32(amount * multiplier);
+    // Crit amount can't be less than normal hit
+    const uint32 result = std::max(amount, uint32(outgoing * taken));
+    return result;
+}
+
+uint32 Unit::CalculateCritAmount(CalcDamageInfo *meleeInfo) const
+{
+    if (!meleeInfo)
+        return 0;
+    uint32 clean = 0;
+    uint32 total = 0;
+    const Unit* victim = meleeInfo->target;
+    const uint32 creatureTypeMask = (victim ? victim->GetCreatureTypeMask() : 0);
+    const SpellDmgClass dmgClass = ((meleeInfo->attackType == RANGED_ATTACK) ? SPELL_DAMAGE_CLASS_RANGED : SPELL_DAMAGE_CLASS_MELEE);
+    const float ignoreReduction = 0.0f;
+    for (uint8 i = 0; i < m_weaponDamageCount[meleeInfo->attackType]; i++)
+    {
+        SubDamageInfo &subDamage = meleeInfo->subDamage[i];
+        const uint32 amount = subDamage.damage;
+        const SpellSchoolMask schoolMask = subDamage.damageSchoolMask;
+        const float multiplier = GetCritMultiplier(schoolMask, creatureTypeMask);
+        const float taken = (victim ? victim->GetCritTakenMultiplier(schoolMask, dmgClass, ignoreReduction) : 1.0f);
+        const uint32 outgoing = uint32(amount * multiplier);
+        // Crit amount can't be less than normal hit
+        const uint32 result = std::max(amount, uint32(outgoing * taken));
+        subDamage.damage = result;
+        total += result;
+        clean += std::max(result, outgoing);
+    }
+    meleeInfo->cleanDamage = clean;
+    return total;
+}
+
 float Unit::GetHitChance(WeaponAttackType attackType) const
 {
-    // Totems use owner's hit chance (when owner is available)
-    if (GetTypeId() == TYPEID_UNIT && ((const Creature*)this)->IsTotem())
-    {
-        if (const Unit* owner = GetOwner())
-            return owner->GetHitChance(attackType);
-    }
     if (attackType == RANGED_ATTACK)
         return m_modRangedHitChance;
     return m_modMeleeHitChance;
@@ -3058,23 +3129,91 @@ float Unit::GetHitChance(SpellSchoolMask schoolMask) const
     if (!uint32(schoolMask))
         return 0.0f;
 
-    // Totems use owner's hit chance (when owner is available)
-    if (GetTypeId() == TYPEID_UNIT && ((const Creature*)this)->IsTotem())
-    {
-        if (const Unit* owner = GetOwner())
-            return owner->GetHitChance(schoolMask);
-    }
     chance += m_modSpellHitChance;
     return chance;
 }
 
-float Unit::CalculateEffectiveCritChance(const Unit* victim, WeaponAttackType attType, bool weapon, bool ability) const
+float Unit::GetHitChance(const SpellEntry *entry, SpellSchoolMask schoolMask) const
 {
     float chance = 0.0f;
-    chance += GetCritChance(attType);
-    // Own chance appears to be zero / below zero / unmeaningful for some reason (debuffs?): skip calculation, unit is incapable
-    if (chance < 0.01f)
+
+    if (!entry)
         return 0.0f;
+
+    // Add own hit chance
+    switch (entry->DmgClass)
+    {
+        case SPELL_DAMAGE_CLASS_MAGIC:
+            chance += GetHitChance(schoolMask);
+            break;
+        case SPELL_DAMAGE_CLASS_MELEE:
+        case SPELL_DAMAGE_CLASS_RANGED:
+            chance += GetHitChance(GetWeaponAttackType(entry));
+            break;
+    }
+    // Add mod
+    if (Player* modOwner = GetSpellModOwner())
+        modOwner->ApplySpellMod(entry->Id, SPELLMOD_RESIST_MISS_CHANCE, chance);
+    return chance;
+}
+
+float Unit::GetMissChance(WeaponAttackType /*attackType*/) const
+{
+    // Totems have no inherit miss chance
+    if (GetTypeId() == TYPEID_UNIT && ((const Creature*)this)->IsTotem())
+        return 0.0f;
+    // Default base chance to be missed for all acting units: 5%
+    float chance = 5.0f;
+    return chance;
+}
+
+float Unit::GetMissChance(SpellSchoolMask /*schoolMask*/) const
+{
+    // Totems have no inherit miss chance
+    if (GetTypeId() == TYPEID_UNIT && ((const Creature*)this)->IsTotem())
+        return 0.0f;
+    // Default base chance to be missed by a spell for all acting units: 4%
+    float chance = 4.0f;
+    return chance;
+}
+
+float Unit::GetMissChance(const SpellEntry *entry, SpellSchoolMask schoolMask) const
+{
+    float chance = 0.0f;
+
+    if (!entry)
+        return 0.0f;
+
+    // Add own miss chance
+    switch (entry->DmgClass)
+    {
+        case SPELL_DAMAGE_CLASS_MELEE:
+        case SPELL_DAMAGE_CLASS_RANGED:
+            chance += GetMissChance(GetWeaponAttackType(entry));
+            break;
+        // By default, we use spell miss chance even for spells without dmgclass
+        default:
+            chance += GetMissChance(schoolMask);
+            break;
+    }
+    // AoE avoidance
+    if (IsAreaOfEffectSpell(entry))
+        chance += GetTotalAuraModifier(SPELL_AURA_MOD_AOE_AVOIDANCE);
+    return chance;
+}
+
+float Unit::CalculateEffectiveCritChance(const Unit* victim, WeaponAttackType attType, const SpellEntry *ability) const
+{
+    float chance = 0.0f;
+    chance += (ability ? GetCritChance(ability, SPELL_SCHOOL_MASK_NORMAL) : GetCritChance(attType));
+    // Own chance appears to be zero / below zero / unmeaningful for some reason (debuffs?): skip calculation, unit is incapable
+    if (chance < 0.005f)
+        return 0.0f;
+    const bool ranged = (attType == RANGED_ATTACK);
+    // Skip victim calculation if positive ability
+    if (ability && IsPositiveSpell(ability, this, victim))
+        return std::max(0.0f, std::min(chance, 100.0f));
+    const bool weapon = (!ability || ability->EquippedItemClass == ITEM_CLASS_WEAPON);
     // Skill difference can be both negative and positive.
     // a) Positive means that attacker's level is higher or additional weapon +skill bonuses
     // b) Negative means that victim's level is higher or additional +defense bonuses
@@ -3083,23 +3222,28 @@ float Unit::CalculateEffectiveCritChance(const Unit* victim, WeaponAttackType at
     // Weapon skill factor: for players and NPCs
     float factor = 0.04f;
     chance += (difference * factor);
-    // Return bounded value if calculation is finalized (for attack) or unbound intermediate to continue (for abilities)
-    return (ability ? chance : std::max(0.0f, std::min(chance, 100.0f)));
+    // Victim's crit taken chance
+    const SpellDmgClass dmgClass = (ranged ? SPELL_DAMAGE_CLASS_RANGED : SPELL_DAMAGE_CLASS_MELEE);
+    chance += victim->GetCritTakenChance(SPELL_SCHOOL_MASK_NORMAL, dmgClass);
+    return std::max(0.0f, std::min(chance, 100.0f));
 }
 
-float Unit::CalculateEffectiveMissChance(const Unit *victim, WeaponAttackType attType, bool weapon, bool ability) const
+float Unit::CalculateEffectiveMissChance(const Unit *victim, WeaponAttackType attType, const SpellEntry *ability) const
 {
     float chance = 0.0f;
 
-    // Base miss chance: 5%
-    chance += 5.0f;
+    chance += (ability ? victim->GetMissChance(ability, SPELL_SCHOOL_MASK_NORMAL) : victim->GetMissChance(attType));
+    // Victim's own chance appears to be zero / below zero / unmeaningful for some reason (debuffs?): skip calculation, unit can't be missed
+    if (chance < 0.005f)
+        return 0.0f;
+    const bool ranged = (attType == RANGED_ATTACK);
+    const bool weapon = (!ability || ability->EquippedItemClass == ITEM_CLASS_WEAPON);
     // Check if dual wielding, add additional miss penalty
-    if (!ability && attType != RANGED_ATTACK && haveOffhandWeapon())
+    if (!ability && !ranged && haveOffhandWeapon())
         chance += 19.0f;
     // Skill difference can be both negative and positive. Positive difference means that:
     // a) Victim's level is higher
     // b) Victim has additional defense skill bonuses
-    const bool ranged = (attType == RANGED_ATTACK);
     const bool vsPlayerOrPet = (victim->GetTypeId() == TYPEID_PLAYER || victim->GetOwnerGuid().IsPlayer());
     const uint32 skill = (weapon ? GetWeaponSkillValue(attType, victim) : GetMaxSkillValueForLevel(victim));
     int32 difference = int32(victim->GetDefenseSkillValue(this) - skill);
@@ -3110,9 +3254,12 @@ float Unit::CalculateEffectiveMissChance(const Unit *victim, WeaponAttackType at
     {
         if (difference > 10)
         {
+            // First 10 points of difference (2 levels): usual decrease
+            chance += (10 * 0.1f);
+            difference -= 10;
+            // Each additional point of difference:
             factor = 0.4f;
-            // Additional base miss chance: 2% for pre-WotLK
-            chance += 2.0f;
+            chance += (difference * 0.2f); // Pre-WotLK: Additional 1% miss chance for each level (final @ 3% per level)
         }
         else
             factor = 0.1f;
@@ -3120,54 +3267,8 @@ float Unit::CalculateEffectiveMissChance(const Unit *victim, WeaponAttackType at
     chance += (difference * factor);
     // Victim's auras affecting attacker's hit contribution:
     chance -= victim->GetTotalAuraModifier(ranged ? SPELL_AURA_MOD_ATTACKER_RANGED_HIT_CHANCE: SPELL_AURA_MOD_ATTACKER_MELEE_HIT_CHANCE);
-    // Finally, reduce chance to miss by own hit chance
-    chance -= GetHitChance(attType);
-    // Return bounded value if calculation is finalized (for attack) or unbound intermediate to continue (for abilities)
-    return (ability ? chance : std::max(0.0f, std::min(chance, 100.0f)));
-}
-
-float Unit::CalculateAbilityCritChance(const Unit *victim, WeaponAttackType attType, const SpellEntry *ability) const
-{
-    if (!ability || ability->HasAttribute(SPELL_ATTR_EX2_CANT_CRIT))
-        return 0.0f;
-
-    float chance = 0.0f;
-
-    // Calculate intermediate effective weapon crit chance and continue
-    if (!CanCrit(attType))
-        return 0.0f;
-    // Calculate melee crit chance in case of hostile hit
-    const bool weapon = (ability->EquippedItemClass == ITEM_CLASS_WEAPON);
-    if (!IsPositiveSpell(ability->Id, this, victim))
-        chance += CalculateEffectiveCritChance(victim, attType, weapon,  true);
-    else
-        chance += GetCritChance(attType);
-    // Modify by ability crit mod
-    if (Player* modOwner = GetSpellModOwner())
-        modOwner->ApplySpellMod(ability->Id, SPELLMOD_CRITICAL_CHANCE, chance);
-    return std::max(0.0f, std::min(chance, 100.0f));
-}
-
-float Unit::CalculateAbilityMissChance(const Unit *victim, WeaponAttackType attType, const SpellEntry *ability) const
-{
-    if (!ability || ability->HasAttribute(SPELL_ATTR_EX3_CANT_MISS))
-        return 0.0f;
-
-    float chance = 0.0f;
-
-    // Calculate intermediate effective weapon miss chance and continue
-    const bool weapon = (ability->EquippedItemClass == ITEM_CLASS_WEAPON);
-    chance += CalculateEffectiveMissChance(victim, attType, weapon, true);
-    // Reduce by ability hit mod
-    if (Player* modOwner = GetSpellModOwner())
-    {
-        float hit = 0.0f;
-        modOwner->ApplySpellMod(ability->Id, SPELLMOD_RESIST_MISS_CHANCE, hit);
-        chance -= hit;
-    }
-    // Victim's AoE avoidance
-    if (IsAreaOfEffectSpell(ability))
-        chance += victim->GetTotalAuraModifier(SPELL_AURA_MOD_AOE_AVOIDANCE);
+    // Finally, take hit chance
+    chance -= (ability ? GetHitChance(ability, SPELL_SCHOOL_MASK_NORMAL) : GetHitChance(attType));
     return std::max(0.0f, std::min(chance, 100.0f));
 }
 
@@ -3178,19 +3279,19 @@ float Unit::CalculateSpellCritChance(const Unit *victim, SpellSchoolMask schoolM
 
     float chance = 0.0f;
 
-    chance += GetCritChance(schoolMask);
-    // Own chance appears to be zero / below zero / unmeaningful for some reason (debuffs?): skip calculation, unit is incapable
-    if (chance < 0.01f)
-        return 0.0f;
-    // Modify by spell mod
-    if (Player* modOwner = GetSpellModOwner())
-        modOwner->ApplySpellMod(spell->Id, SPELLMOD_CRITICAL_CHANCE, chance);
-    // Modify by victim in case of hostile hit
-    if (!IsPositiveSpell(spell->Id, this, victim))
+    switch (spell->DmgClass)
     {
-        // Victim's resilience-like auras contribution
-        chance += victim->GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_ATTACKER_SPELL_CRIT_CHANCE, schoolMask);
+        case SPELL_DAMAGE_CLASS_MELEE:
+        case SPELL_DAMAGE_CLASS_RANGED:
+            return CalculateEffectiveCritChance(victim, GetWeaponAttackType(spell), spell);
     }
+    chance += GetCritChance(spell, schoolMask);
+    // Own chance appears to be zero / below zero / unmeaningful for some reason (debuffs?): skip calculation, unit is incapable
+    if (chance < 0.005f)
+        return 0.0f;
+    // Modify by victim in case of hostile hit
+    if (!IsPositiveSpell(spell, this, victim))
+        chance += victim->GetCritTakenChance(schoolMask, SpellDmgClass(spell->DmgClass));
     // TODO: Scripted crit chance auras: class script auras need to be orgnaized and re-implemented in the future as a part of scripting system
     const AuraList &scripts = GetAurasByType(SPELL_AURA_OVERRIDE_CLASS_SCRIPTS);
     for (AuraList::const_iterator i = scripts.begin(); i != scripts.end(); ++i)
@@ -3220,8 +3321,16 @@ float Unit::CalculateSpellMissChance(const Unit *victim, SpellSchoolMask schoolM
     float chance = 0.0f;
     const float minimum = 1.0f; // Pre-WotLK: unavoidable spell miss is at least 1%
 
-    // Base miss chance: 4%
-    chance += 4.0f;
+    switch (spell->DmgClass)
+    {
+        case SPELL_DAMAGE_CLASS_MELEE:
+        case SPELL_DAMAGE_CLASS_RANGED:
+            return CalculateEffectiveMissChance(victim, GetWeaponAttackType(spell), spell);
+    }
+    chance += victim->GetMissChance(spell, schoolMask);
+    // Victim's own chance appears to be zero / below zero / unmeaningful for some reason (debuffs?): skip calculation, unit can't be missed
+    if (chance < 0.005f)
+        return 0.0f;
     // Level difference: positive adds to miss chance, negative substracts
     const bool vsPlayerOrPet = (victim->GetTypeId() == TYPEID_PLAYER || victim->GetOwnerGuid().IsPlayer());
     int32 difference = int32(victim->GetLevelForTarget(this) - GetLevelForTarget(victim));
@@ -3238,30 +3347,23 @@ float Unit::CalculateSpellMissChance(const Unit *victim, SpellSchoolMask schoolM
     else
         chance += (difference * factor);
     // Reduce by caster's spell hit chance
-    chance -= GetHitChance(schoolMask);
-    // Reduce by caster's spell hit mod
-    if (Player* modOwner = GetSpellModOwner())
-    {
-        float hit = 0.0f;
-        modOwner->ApplySpellMod(spell->Id, SPELLMOD_RESIST_MISS_CHANCE, hit);
-        chance -= hit;
-    }
-    // Increase by victim's AoE avoidance
-    if (IsAreaOfEffectSpell(spell))
-        chance += victim->GetTotalAuraModifier(SPELL_AURA_MOD_AOE_AVOIDANCE);
+    chance -= GetHitChance(spell, schoolMask);
     // Reduce (or increase) by victim SPELL_AURA_MOD_ATTACKER_SPELL_HIT_CHANCE auras
     chance -= victim->GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_ATTACKER_SPELL_HIT_CHANCE, schoolMask);
     return std::max(minimum, std::min(chance, 100.0f));
 }
 
+bool Unit::RollSpellCritOutcome(const Unit *victim, SpellSchoolMask schoolMask, const SpellEntry *spell) const
+{
+    if (!CanCrit(spell, schoolMask, GetWeaponAttackType(spell)))
+        return false;
+
+    const float chance = CalculateSpellCritChance(victim, schoolMask, spell);
+    return roll_chance_combat(chance);
+}
+
 int32 Unit::GetResistancePenetration(SpellSchools school) const
 {
-    // Totems use owner's penetration (when owner is available)
-    if (GetTypeId() == TYPEID_UNIT && ((const Creature*)this)->IsTotem())
-    {
-        if (const Unit* owner = GetOwner())
-            return owner->GetResistancePenetration(school);
-    }
     // Technically, it is target resistance mod, but it's used as penetration (negative sign) 99.9% of the time
     // So, let's logically reverse the sign and use it as such
     return -(GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_TARGET_RESISTANCE, (1 << school)));
@@ -3895,13 +3997,10 @@ bool Unit::AddSpellAuraHolder(SpellAuraHolder* holder)
                     delete holder;
                     return false;
                 }
-                else
+                else if (!IsStackableSpell(aurSpellInfo, foundHolder->GetSpellProto(), holder->GetTarget()))
                 {
-                    if (!IsStackableSpell(holder->GetSpellProto(), foundHolder->GetSpellProto(), holder->GetTarget()))
-                    {
-                        RemoveSpellAuraHolder(foundHolder, AURA_REMOVE_BY_STACK);
-                        break;
-                    }
+                    RemoveSpellAuraHolder(foundHolder, AURA_REMOVE_BY_STACK);
+                    break;
                 }
             }
         }
@@ -6055,114 +6154,6 @@ int32 Unit::SpellBaseDamageBonusTaken(SpellSchoolMask schoolMask) const
     return TakenAdvertisedBenefit;
 }
 
-bool Unit::IsSpellCrit(Unit* pVictim, SpellEntry const* spellProto, SpellSchoolMask schoolMask, WeaponAttackType attackType)
-{
-    if (!CanCrit(spellProto, schoolMask, attackType))
-        return false;
-
-    float crit_chance = 0.0f;
-    switch (spellProto->DmgClass)
-    {
-        case SPELL_DAMAGE_CLASS_NONE: // By default uses spell attack table: Many heals and damage spells
-        case SPELL_DAMAGE_CLASS_MAGIC:
-            crit_chance = CalculateSpellCritChance(pVictim, schoolMask, spellProto);
-            break;
-        case SPELL_DAMAGE_CLASS_MELEE:
-        case SPELL_DAMAGE_CLASS_RANGED:
-            crit_chance = CalculateAbilityCritChance(pVictim, attackType, spellProto);
-            break;
-        default:
-            return false;
-    }
-    return (roll_chance_f(crit_chance));
-}
-
-uint32 Unit::SpellCriticalDamageBonus(SpellEntry const* spellProto, uint32 amount, Unit* pVictim) const
-{
-    // Base critical bonus:
-    int32 bonus = (amount / 2);         // magical default bonus is 50% of the amount
-    switch (spellProto->DmgClass)
-    {
-        case SPELL_DAMAGE_CLASS_MELEE:
-        case SPELL_DAMAGE_CLASS_RANGED:
-            bonus = int32(amount);      // physical default bonus is 100% of the amount
-            break;
-    }
-
-    // Apply base critical bonus mods first:
-    int32 modPctBonus = 0;
-    // Apply SPELL_AURA_MOD_CRIT_DAMAGE_BONUS: gem mechanics
-    modPctBonus += GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_CRIT_DAMAGE_BONUS, GetSpellSchoolMask(spellProto));
-    // Apply SPELL_AURA_MOD_CRIT_PERCENT_VERSUS: creature type slaying talents
-    if (pVictim)
-        modPctBonus += GetTotalAuraMultiplierByMiscMask(SPELL_AURA_MOD_CRIT_PERCENT_VERSUS, pVictim->GetCreatureTypeMask());
-    // Calculate base critical bonus:
-    if (modPctBonus)
-        bonus += int32((int32(amount) + bonus) * float(modPctBonus / 100.0f));
-    // Apply total crit bonus mods (usually from talents)
-    if (Player* modOwner = GetSpellModOwner())
-        modOwner->ApplySpellMod(spellProto->Id, SPELLMOD_CRIT_DAMAGE_BONUS, bonus);
-    // A crit cannot deal less damage than a normal hit
-    bonus = std::max(bonus, 0);
-
-    // Final crit damage
-    return (amount + uint32(bonus));
-}
-
-uint32 Unit::SpellCriticalHealingBonus(SpellEntry const* spellProto, uint32 damage, Unit* pVictim) const
-{
-    // Calculate critical bonus
-    int32 crit_bonus;
-    switch (spellProto->DmgClass)
-    {
-        case SPELL_DAMAGE_CLASS_MELEE:                      // for melee based spells is 100%
-        case SPELL_DAMAGE_CLASS_RANGED:
-            // TODO: write here full calculation for melee/ranged spells
-            crit_bonus = damage;
-            break;
-        default:
-            crit_bonus = damage / 2;                        // for spells is 50%
-            break;
-    }
-
-    if (pVictim)
-    {
-        uint32 creatureTypeMask = pVictim->GetCreatureTypeMask();
-        crit_bonus = int32(crit_bonus * GetTotalAuraMultiplierByMiscMask(SPELL_AURA_MOD_CRIT_PERCENT_VERSUS, creatureTypeMask));
-    }
-
-    if (crit_bonus > 0)
-        damage += crit_bonus;
-
-    return damage;
-}
-
-uint32 Unit::MeleeCriticalDamageBonus(WeaponAttackType attackType, SpellSchoolMask schoolMask, uint32 *cleanDamage, uint32 amount, Unit *pVictim)
-{
-    // Crit bonus calc: default physical crit bonus is 100% of amount
-    int32 bonus = int32(amount);
-    int32 clean = 0;
-
-    // Apply base critical bonus mods first:
-    int32 modPctBonus = 0;
-    // Apply SPELL_AURA_MOD_CRIT_DAMAGE_BONUS: gem mechanics
-    modPctBonus += GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_CRIT_DAMAGE_BONUS, schoolMask);
-    // Apply SPELL_AURA_MOD_CRIT_PERCENT_VERSUS: creature type slaying talents
-    if (pVictim)
-        modPctBonus += GetTotalAuraMultiplierByMiscMask(SPELL_AURA_MOD_CRIT_PERCENT_VERSUS, pVictim->GetCreatureTypeMask());
-    // Calculate base critical bonus:
-    if (modPctBonus)
-        bonus += int32((int32(amount) + bonus) * float(modPctBonus / 100.0f));
-
-    // A crit cannot deal less damage than a normal hit
-    bonus = std::max(bonus, 0);
-    clean = bonus;
-
-    // Final crit damage
-    *cleanDamage = (amount + uint32(clean));
-    return (amount + uint32(bonus));
-}
-
 /**
  * Calculates caster part of healing spell bonuses,
  * also includes different bonuses dependent from target auras
@@ -7511,7 +7502,7 @@ void Unit::TauntApply(Unit* taunter)
         return;
 
     // Only attack taunter if this is a valid target
-    if (!hasUnitState(UNIT_STAT_STUNNED | UNIT_STAT_DIED) && !IsSecondChoiceTarget(taunter, true))
+    if (CanReactInCombat() && !IsSecondChoiceTarget(taunter, true, true))
     {
         if (GetTargetGuid() || !target)
             SetInFront(taunter);
@@ -7584,7 +7575,7 @@ void Unit::FixateTarget(Unit* pVictim)
 
 //======================================================================
 
-bool Unit::IsSecondChoiceTarget(Unit* pTarget, bool checkThreatArea)
+bool Unit::IsSecondChoiceTarget(Unit* pTarget, bool taunt, bool checkThreatArea)
 {
     MANGOS_ASSERT(pTarget);
 
@@ -7593,7 +7584,7 @@ bool Unit::IsSecondChoiceTarget(Unit* pTarget, bool checkThreatArea)
 
     return
         pTarget->IsTargetUnderControl(*this) ||
-        pTarget->IsImmuneToDamage(GetMeleeDamageSchoolMask()) ||
+        (!taunt && pTarget->IsImmuneToDamage(GetMeleeDamageSchoolMask())) ||
         pTarget->hasNegativeAuraWithInterruptFlag(AURA_INTERRUPT_FLAG_DAMAGE) ||
         (thisCreature && checkThreatArea && thisCreature->IsOutOfThreatArea(pTarget));
 }
@@ -7626,7 +7617,7 @@ bool Unit::SelectHostileTarget()
         else
         {
             Unit* pFixateTarget = GetMap()->GetUnit(m_fixateTargetGuid);
-            if (pFixateTarget && pFixateTarget->isAlive() && !IsSecondChoiceTarget(pFixateTarget, true))
+            if (pFixateTarget && pFixateTarget->isAlive() && !IsSecondChoiceTarget(pFixateTarget, false, true))
                 target = pFixateTarget;
         }
     }
@@ -7642,7 +7633,7 @@ bool Unit::SelectHostileTarget()
         {
             if ((caster = (*aura)->GetCaster()) && caster->IsInMap(this) &&
                     caster->isTargetableForAttack() && caster->isInAccessablePlaceFor((Creature*)this) &&
-                    !IsSecondChoiceTarget(caster, true))
+                    !IsSecondChoiceTarget(caster, true, true))
             {
                 target = caster;
                 break;
@@ -7656,7 +7647,7 @@ bool Unit::SelectHostileTarget()
 
     if (target)
     {
-        if (!hasUnitState(UNIT_STAT_STUNNED | UNIT_STAT_DIED))
+        if (CanReactInCombat())
         {
             SetInFront(target);
             if (oldTarget != target)
@@ -8697,7 +8688,7 @@ void Unit::ProcDamageAndSpellFor(bool isVictim, Unit* pTarget, uint32 procFlag, 
         if (GetTypeId() == TYPEID_PLAYER)
         {
             // On melee based hit/miss/resist need update skill (for victim and attacker)
-            if (procExtra & (PROC_EX_NORMAL_HIT | PROC_EX_MISS | PROC_EX_RESIST))
+            if (procExtra & (PROC_EX_NORMAL_HIT | PROC_EX_CRITICAL_HIT | PROC_EX_MISS | PROC_EX_DODGE | PROC_EX_PARRY | PROC_EX_BLOCK))
             {
                 if (pTarget->GetTypeId() != TYPEID_PLAYER && pTarget->GetCreatureType() != CREATURE_TYPE_CRITTER)
                     ((Player*)this)->UpdateCombatSkills(pTarget, attType, isVictim);
@@ -9081,12 +9072,12 @@ void Unit::SetIncapacitatedState(bool apply, uint32 state, ObjectGuid casterGuid
     // Update incapacitated movement if required:
     if (HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_CONFUSED))
     {
-        StopMoving();
+        StopMoving(true);
         GetMotionMaster()->MoveConfused();
     }
     else if (HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_FLEEING))
     {
-        StopMoving();
+        StopMoving(true);
         GetMotionMaster()->MoveFleeing(IsInWorld() ?  GetMap()->GetUnit(casterGuid) : nullptr, time);
     }
 }
