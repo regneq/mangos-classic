@@ -18,7 +18,7 @@
 
 #include "Util.h"
 #include "Timer.h"
-#include "utf8cpp/utf8.h"
+#include <utf8.h>
 #include "TSS.h"
 
 #include <boost/asio.hpp>
@@ -56,7 +56,7 @@ uint32 WorldTimer::tick()
 uint32 WorldTimer::getMSTime()
 {
     static auto const start_time = std::chrono::system_clock::now();
-    return static_cast<uint32>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start_time).count());
+    return static_cast<uint32>((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()) - std::chrono::duration_cast<std::chrono::milliseconds>(start_time.time_since_epoch())).count());
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -123,7 +123,7 @@ Tokens StrSplit(const std::string& src, const std::string& sep)
         if (sep.find(*i) != std::string::npos)
         {
             if (s.length()) r.push_back(s);
-            s = "";
+            s.clear();
         }
         else
         {
@@ -271,7 +271,7 @@ uint32 CreatePIDFile(const std::string& filename)
     if (pid_file == nullptr)
         return 0;
 
-#ifdef WIN32
+#ifdef _WIN32
     DWORD pid = GetCurrentProcessId();
 #else
     pid_t pid = getpid();
@@ -289,7 +289,7 @@ size_t utf8length(std::string& utf8str)
     {
         return utf8::distance(utf8str.c_str(), utf8str.c_str() + utf8str.size());
     }
-    catch (std::exception)
+    catch (const std::exception&)
     {
         utf8str = "";
         return 0;
@@ -311,7 +311,7 @@ void utf8truncate(std::string& utf8str, size_t len)
         char* oend = utf8::utf16to8(wstr.c_str(), wstr.c_str() + wstr.size(), &utf8str[0]);
         utf8str.resize(oend - (&utf8str[0]));               // remove unused tail
     }
-    catch (std::exception)
+    catch (const std::exception&)
     {
         utf8str = "";
     }
@@ -334,7 +334,7 @@ bool Utf8toWStr(char const* utf8str, size_t csize, wchar_t* wstr, size_t& wsize)
         utf8::utf8to16(utf8str, utf8str + csize, wstr);
         wstr[len] = L'\0';
     }
-    catch (std::exception)
+    catch (const std::exception&)
     {
         if (wsize > 0)
             wstr[0] = L'\0';
@@ -355,7 +355,7 @@ bool Utf8toWStr(const std::string& utf8str, std::wstring& wstr)
         if (len)
             utf8::utf8to16(utf8str.c_str(), utf8str.c_str() + utf8str.size(), &wstr[0]);
     }
-    catch (std::exception)
+    catch (const std::exception&)
     {
         wstr = L"";
         return false;
@@ -375,7 +375,7 @@ bool WStrToUtf8(wchar_t* wstr, size_t size, std::string& utf8str)
         utf8str2.resize(oend - (&utf8str2[0]));             // remove unused tail
         utf8str = utf8str2;
     }
-    catch (std::exception)
+    catch (const std::exception&)
     {
         utf8str = "";
         return false;
@@ -384,7 +384,7 @@ bool WStrToUtf8(wchar_t* wstr, size_t size, std::string& utf8str)
     return true;
 }
 
-bool WStrToUtf8(std::wstring wstr, std::string& utf8str)
+bool WStrToUtf8(const std::wstring& wstr, std::string& utf8str)
 {
     try
     {
@@ -395,7 +395,7 @@ bool WStrToUtf8(std::wstring wstr, std::string& utf8str)
         utf8str2.resize(oend - (&utf8str2[0]));             // remove unused tail
         utf8str = utf8str2;
     }
-    catch (std::exception)
+    catch (const std::exception&)
     {
         utf8str = "";
         return false;
@@ -438,7 +438,7 @@ bool consoleToUtf8(const std::string& conStr, std::string& utf8str)
 #endif
 }
 
-bool Utf8FitTo(const std::string& str, std::wstring search)
+bool Utf8FitTo(const std::string& str, const std::wstring& search)
 {
     std::wstring temp;
 

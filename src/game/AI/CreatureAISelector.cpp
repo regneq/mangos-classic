@@ -16,16 +16,17 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#include "CreatureAISelector.h"
-#include "Creature.h"
-#include "CreatureAIImpl.h"
-#include "NullCreatureAI.h"
+#include "AI/CreatureAISelector.h"
+#include "Entities/Creature.h"
+#include "BaseAI/CreatureAIImpl.h"
+#include "BaseAI/NullCreatureAI.h"
 #include "Policies/Singleton.h"
-#include "MovementGenerator.h"
-#include "ScriptMgr.h"
-#include "Pet.h"
+#include "MotionGenerators/MovementGenerator.h"
+#include "AI/ScriptDevAI/ScriptDevAIMgr.h"
+#include "Entities/Pet.h"
 #include "Log.h"
-#include "PetAI.h"
+#include "BaseAI/PetAI.h"
+#include "BaseAI/PossessedAI.h"
 
 INSTANTIATE_SINGLETON_1(CreatureAIRegistry);
 INSTANTIATE_SINGLETON_1(MovementGeneratorRegistry);
@@ -35,8 +36,8 @@ namespace FactorySelector
     CreatureAI* selectAI(Creature* creature)
     {
         // Allow scripting AI for normal creatures and not controlled pets (guardians and mini-pets)
-        if ((!creature->IsPet() || !static_cast<Pet*>(creature)->isControlled()) && !creature->isCharmed())
-            if (CreatureAI* scriptedAI = sScriptMgr.GetCreatureAI(creature))
+        if ((!creature->IsPet() || !static_cast<Pet*>(creature)->isControlled()) && !creature->HasCharmer())
+            if (CreatureAI* scriptedAI = sScriptDevAIMgr.GetCreatureAI(creature))
                 return scriptedAI;
 
         CreatureAIRegistry& ai_registry(CreatureAIRepository::Instance());
@@ -96,6 +97,8 @@ namespace FactorySelector
             return  ai_factory->Create(creature);
         else if (ainame == "PetAI")
             return (new PetAI(unit));
+        else if (ainame == "PossessedAI")
+            return (new PossessedAI(unit));
 
         sLog.outError("FactorySelector::GetSpecificAI> Cannot get %s AI for %s", ainame.c_str(), unit->GetObjectGuid().GetString().c_str());
         MANGOS_ASSERT(false);

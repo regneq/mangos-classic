@@ -129,6 +129,10 @@ class Log : public MaNGOS::Singleton<Log, MaNGOS::ClassLevelLockable<Log, std::m
             if (worldLogfile != nullptr)
                 fclose(worldLogfile);
             worldLogfile = nullptr;
+
+            if (customLogFile != nullptr)
+                fclose(customLogFile);
+            customLogFile = nullptr;
         }
     public:
         void Initialize();
@@ -165,6 +169,7 @@ class Log : public MaNGOS::Singleton<Log, MaNGOS::ClassLevelLockable<Log, std::m
         // any log level
         void outCharDump(const char* str, uint32 account_id, uint32 guid, const char* name);
         void outRALog(const char* str, ...)       ATTR_PRINTF(2, 3);
+        void outCustomLog(const char* str, ...)       ATTR_PRINTF(2, 3);
         uint32 GetLogLevel() const { return m_logLevel; }
         void SetLogLevel(char* Level);
         void SetLogFileLevel(char* Level);
@@ -196,6 +201,7 @@ class Log : public MaNGOS::Singleton<Log, MaNGOS::ClassLevelLockable<Log, std::m
         FILE* eventAiErLogfile;
         FILE* scriptErrLogFile;
         FILE* worldLogfile;
+        FILE* customLogFile;
         std::mutex m_worldLogMtx;
 
         // log/console control
@@ -268,12 +274,13 @@ class Log : public MaNGOS::Singleton<Log, MaNGOS::ClassLevelLockable<Log, std::m
     ERROR_DB_FILTER_LOG(LOG_FILTER_DB_STRICTED_CHECK, __VA_ARGS__)
 
 // primary for script library
-void MANGOS_DLL_SPEC outstring_log(const char* str, ...) ATTR_PRINTF(1, 2);
-void MANGOS_DLL_SPEC detail_log(const char* str, ...) ATTR_PRINTF(1, 2);
-void MANGOS_DLL_SPEC debug_log(const char* str, ...) ATTR_PRINTF(1, 2);
-void MANGOS_DLL_SPEC error_log(const char* str, ...) ATTR_PRINTF(1, 2);
-void MANGOS_DLL_SPEC error_db_log(const char* str, ...) ATTR_PRINTF(1, 2);
-void MANGOS_DLL_SPEC setScriptLibraryErrorFile(char const* fname, char const* libName);
-void MANGOS_DLL_SPEC script_error_log(const char* str, ...) ATTR_PRINTF(1, 2);
+void outstring_log();
+void outstring_log(const char* str, ...) ATTR_PRINTF(1, 2);
+void detail_log(const char* str, ...) ATTR_PRINTF(1, 2);
+void debug_log(const char* str, ...) ATTR_PRINTF(1, 2);
+void error_log(const char* str, ...) ATTR_PRINTF(1, 2);
+void error_db_log(const char* str, ...) ATTR_PRINTF(1, 2);
+void setScriptLibraryErrorFile(char const* fname, char const* libName);
+void script_error_log(const char* str, ...) ATTR_PRINTF(1, 2);
 
 #endif

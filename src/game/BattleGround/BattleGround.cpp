@@ -16,23 +16,24 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#include "Object.h"
-#include "Player.h"
+#include "Entities/Object.h"
+#include "Entities/Player.h"
 #include "BattleGround.h"
 #include "BattleGroundMgr.h"
-#include "Creature.h"
-#include "MapManager.h"
-#include "Language.h"
-#include "SpellAuras.h"
-#include "World.h"
-#include "Group.h"
-#include "ObjectGuid.h"
-#include "ObjectMgr.h"
-#include "Mail.h"
+#include "Entities/Creature.h"
+#include "Maps/MapManager.h"
+#include "Tools/Language.h"
+#include "Spells/SpellAuras.h"
+#include "World/World.h"
+#include "Groups/Group.h"
+#include "Entities/ObjectGuid.h"
+#include "Globals/ObjectMgr.h"
+#include "Globals/ObjectAccessor.h"
+#include "Mails/Mail.h"
 #include "WorldPacket.h"
-#include "Formulas.h"
-#include "GridNotifiersImpl.h"
-#include "Chat.h"
+#include "Tools/Formulas.h"
+#include "Grids/GridNotifiersImpl.h"
+#include "Chat/Chat.h"
 
 #include <cstdarg>
 
@@ -206,9 +207,6 @@ BattleGround::BattleGround(): m_BuffChange(false), m_StartDelayTime(0), m_startM
 
     m_BgRaids[TEAM_INDEX_ALLIANCE]         = nullptr;
     m_BgRaids[TEAM_INDEX_HORDE]            = nullptr;
-
-    m_PlayersCount[TEAM_INDEX_ALLIANCE]    = 0;
-    m_PlayersCount[TEAM_INDEX_HORDE]       = 0;
 
     m_PlayersCount[TEAM_INDEX_ALLIANCE]    = 0;
     m_PlayersCount[TEAM_INDEX_HORDE]       = 0;
@@ -470,7 +468,7 @@ void BattleGround::SendPacketToTeam(Team teamId, WorldPacket const& packet, Play
             continue;
 
         Team team = itr->second.PlayerTeam;
-        if (!team) team = plr->GetTeam();
+        if (team != ALLIANCE && team != HORDE) team = plr->GetTeam();
 
         if (team == teamId)
             plr->GetSession()->SendPacket(packet);
@@ -501,7 +499,7 @@ void BattleGround::PlaySoundToTeam(uint32 SoundID, Team teamId)
         }
 
         Team team = itr->second.PlayerTeam;
-        if (!team) team = plr->GetTeam();
+        if (team != ALLIANCE && team != HORDE) team = plr->GetTeam();
 
         if (team == teamId)
         {
@@ -527,7 +525,7 @@ void BattleGround::CastSpellOnTeam(uint32 SpellID, Team teamId)
         }
 
         Team team = itr->second.PlayerTeam;
-        if (!team) team = plr->GetTeam();
+        if (team != ALLIANCE && team != HORDE) team = plr->GetTeam();
 
         if (team == teamId)
             plr->CastSpell(plr, SpellID, TRIGGERED_OLD_TRIGGERED);
@@ -550,7 +548,7 @@ void BattleGround::RewardHonorToTeam(uint32 Honor, Team teamId)
         }
 
         Team team = itr->second.PlayerTeam;
-        if (!team) team = plr->GetTeam();
+        if (team != ALLIANCE && team != HORDE) team = plr->GetTeam();
 
         if (team == teamId)
             UpdatePlayerScore(plr, SCORE_BONUS_HONOR, Honor);
@@ -578,7 +576,7 @@ void BattleGround::RewardReputationToTeam(uint32 faction_id, uint32 Reputation, 
         }
 
         Team team = itr->second.PlayerTeam;
-        if (!team) team = plr->GetTeam();
+        if (team != ALLIANCE && team != HORDE) team = plr->GetTeam();
 
         if (team == teamId)
             plr->GetReputationMgr().ModifyReputation(factionEntry, Reputation);
@@ -699,17 +697,18 @@ void BattleGround::EndBattleGround(Team winner)
 
             stmt.addUInt32(battleground_id);
             stmt.addUInt32(plr->GetGUIDLow());
-            stmt.addUInt32(score->second->GetKillingBlows());
-            stmt.addUInt32(score->second->GetDeaths());
-            stmt.addUInt32(score->second->GetHonorableKills());
-            stmt.addUInt32(score->second->GetBonusHonor());
-            stmt.addUInt32(score->second->GetDamageDone());
-            stmt.addUInt32(score->second->GetHealingDone());
-            stmt.addUInt32(score->second->GetAttr1());
-            stmt.addUInt32(score->second->GetAttr2());
-            stmt.addUInt32(score->second->GetAttr3());
-            stmt.addUInt32(score->second->GetAttr4());
-            stmt.addUInt32(score->second->GetAttr5());
+            BattleGroundScore *pScore = score->second;
+            stmt.addUInt32(pScore->GetKillingBlows());
+            stmt.addUInt32(pScore->GetDeaths());
+            stmt.addUInt32(pScore->GetHonorableKills());
+            stmt.addUInt32(pScore->GetBonusHonor());
+            stmt.addUInt32(pScore->GetDamageDone());
+            stmt.addUInt32(pScore->GetHealingDone());
+            stmt.addUInt32(pScore->GetAttr1());
+            stmt.addUInt32(pScore->GetAttr2());
+            stmt.addUInt32(pScore->GetAttr3());
+            stmt.addUInt32(pScore->GetAttr4());
+            stmt.addUInt32(pScore->GetAttr5());
 
             stmt.Execute();
         }
@@ -872,7 +871,11 @@ void BattleGround::RewardQuestComplete(Player* plr)
 
 void BattleGround::BlockMovement(Player* plr)
 {
-    plr->SetClientControl(plr, 0);                          // movement disabled NOTE: the effect will be automatically removed by client when the player is teleported from the battleground, so no need to send with uint8(1) in RemovePlayerAtLeave()
+    // TODO: This originally is meant to be applied/removed by the dummy aura casted on battleground end
+    // NOTE: control will be automatically reset by client when the player changes the map, so not needed to restore in RemovePlayerAtLeave()
+    plr->UpdateClientControl(plr, false);
+    // Set the flag to indicate that server does not want player to have client control
+    plr->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_CLIENT_CONTROL_LOST);
 }
 
 void BattleGround::RemovePlayerAtLeave(ObjectGuid guid, bool Transport, bool SendPacket)
@@ -900,6 +903,9 @@ void BattleGround::RemovePlayerAtLeave(ObjectGuid guid, bool Transport, bool Sen
 
     if (plr)
     {
+        // Remove flag set in BattleGround::BlockMovement()
+        plr->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_CLIENT_CONTROL_LOST);
+
         // should remove spirit of redemption
         if (plr->HasAuraType(SPELL_AURA_SPIRIT_OF_REDEMPTION))
             plr->RemoveSpellsCausingAura(SPELL_AURA_MOD_SHAPESHIFT);
@@ -921,7 +927,7 @@ void BattleGround::RemovePlayerAtLeave(ObjectGuid guid, bool Transport, bool Sen
         BattleGroundQueueTypeId bgQueueTypeId = BattleGroundMgr::BGQueueTypeId(GetTypeID());
         if (plr)
         {
-            if (!team) team = plr->GetTeam();
+            if (team != ALLIANCE && team != HORDE) team = plr->GetTeam();
 
             if (SendPacket)
             {
